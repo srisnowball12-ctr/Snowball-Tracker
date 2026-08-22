@@ -132,8 +132,8 @@ function App(){
     doc.save('snowball-redemption-report.pdf')
   }
 
-  if(!session) return <main className="login"><section><h1>Snowball</h1><p>Redemption Tracker</p><form onSubmit={login}><input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} /><input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} /><button disabled={loading}>{loading?'Signing in...':'Login'}</button>{error&&<small>{error}</small>}</form></section></main>
-
+if(!session) return <main className="login"><section><h1>Snowball Financial Services</h1><p>Redemption Tracker</p><form onSubmit={login}><input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} /><input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} /><button disabled={loading}>{loading?'Signing in...':'Login'}</button>{error&&<small>{error}</small>}</form></section></main>
+  
   return <main>
     <header><div><h1>Snowball Redemption Tracker</h1><p>Analyse redemptions • Identify SWPs • Track RM-wise activity</p></div><button className="ghost" onClick={()=>supabase.auth.signOut()}><LogOut size={17}/> Logout</button></header>
     {error&&<div className="error">{error}</div>}
