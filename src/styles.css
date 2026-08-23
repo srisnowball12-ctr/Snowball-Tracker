@@ -977,3 +977,31 @@ tbody tr:hover {
     justify-self: start;
   }
 }
+
+
+/* Admin email + notification centre */
+.adminEmail { display:block; width:100%; color:var(--muted); font-size:12px; margin-top:-3px; }
+.notificationWrap { position:relative; }
+.notificationBell { position:relative; }
+.notificationCount { position:absolute; top:-6px; right:-6px; min-width:17px; height:17px; border-radius:50%; display:grid; place-items:center; background:#c95757; color:#fff; font-size:10px; font-weight:800; border:2px solid #fff; }
+.notificationPanel { position:absolute; right:0; top:calc(100% + 10px); width:360px; max-height:460px; overflow:auto; background:#fff; border:1px solid #dbe3eb; border-radius:14px; box-shadow:0 18px 40px rgba(20,35,55,.18); z-index:50; padding:8px; }
+.notificationPanelHead { display:flex; justify-content:space-between; align-items:center; padding:8px 10px 10px; border-bottom:1px solid #e9edf2; }
+.notificationPanelHead button,.modalClose { border:0; background:transparent; padding:5px; cursor:pointer; color:var(--muted); }
+.notificationItem { padding:12px 10px; border-bottom:1px solid #edf0f4; display:grid; gap:4px; }
+.notificationItem.unread { background:#f5f8fc; border-left:3px solid #b38731; }
+.notificationItem strong { font-size:13px; }
+.notificationItem span { color:#526273; font-size:12px; line-height:1.45; }
+.notificationItem small { color:#8a96a3; font-size:10px; }
+.notificationEmpty { padding:24px 10px; color:var(--muted); text-align:center; }
+.modalBackdrop { position:fixed; inset:0; z-index:100; background:rgba(16,31,49,.38); display:grid; place-items:center; padding:18px; }
+.adminModal { width:min(520px,100%); background:#fff; border-radius:18px; box-shadow:0 24px 70px rgba(0,0,0,.25); padding:22px; }
+.modalHeader { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:18px; }
+.modalHeader h2 { margin:0 0 6px; font-size:20px; }
+.modalHeader p { margin:0; color:var(--muted); font-size:13px; line-height:1.45; }
+.adminModal label { display:block; font-weight:700; font-size:13px; margin-bottom:7px; }
+.emailField { display:flex; align-items:center; gap:9px; border:1px solid #cfd8e2; border-radius:10px; padding:0 11px; }
+.emailField input { border:0 !important; outline:0; width:100%; padding:12px 0; background:transparent; }
+.modalNote { color:var(--muted); font-size:12px; line-height:1.5; margin:10px 0 18px; }
+.modalActions { display:flex; justify-content:flex-end; gap:10px; }
+.modalActions > button:not(.primaryButton) { border:1px solid #d5dde6; background:#fff; border-radius:9px; padding:9px 13px; }
+@media (max-width:680px) { .notificationPanel { width:min(360px, calc(100vw - 30px)); right:-50px; } .modalActions { flex-direction:column-reverse; } }
