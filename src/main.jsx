@@ -8,7 +8,7 @@ import {
   Upload, Download, FileText, LogOut, RefreshCw,
   LayoutDashboard, Table2, Settings, Users,
   Eye, EyeOff, ArrowLeft, UserPlus, UserMinus,
-  ShieldCheck, CheckCircle2, CircleDot
+  ShieldCheck, CheckCircle2, CircleDot, Bell, X, Mail
 } from 'lucide-react'
 import logoUrl from './logo.png'
 import './styles.css'
@@ -219,6 +219,10 @@ function App() {
   const [message, setMessage] = useState('')
   const [newRm, setNewRm] = useState('')
   const [settingsTab, setSettingsTab] = useState('current')
+  const [adminModal, setAdminModal] = useState(null)
+  const [adminEmail, setAdminEmail] = useState('')
+  const [notifications, setNotifications] = useState([])
+  const [showNotifications, setShowNotifications] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
 
@@ -243,6 +247,7 @@ function App() {
     if (session) {
       loadData()
       loadRms()
+      loadNotifications()
     }
   }, [session])
 
@@ -324,6 +329,48 @@ function App() {
     setRms(data || [])
   }
 
+  async function loadNotifications() {
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    if (!error) setNotifications(data || [])
+  }
+
+  async function notify(title, body) {
+    const item = {
+      id: `local-${Date.now()}-${Math.random()}`,
+      title,
+      body,
+      created_at: new Date().toISOString(),
+      is_read: false
+    }
+
+    setNotifications(prev => [item, ...prev])
+    setMessage(title)
+    window.setTimeout(() => setMessage(''), 3500)
+
+    const { data, error } = await supabase
+      .from('notifications')
+      .insert({ title, body, is_read: false })
+      .select()
+      .single()
+
+    if (!error && data) {
+      setNotifications(prev => [data, ...prev.filter(x => x.id !== item.id)])
+    }
+  }
+
+  async function markNotificationsRead() {
+    setNotifications(prev => prev.map(x => ({ ...x, is_read: true })))
+    await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('is_read', false)
+  }
+
   async function addRm(e) {
     e.preventDefault()
     const name = newRm.trim()
@@ -349,74 +396,99 @@ function App() {
     }
 
     setNewRm('')
-    setMessage(`${name} added successfully.`)
+    await notify('RM added', `${name} has been added to the organisation.`)
     await loadRms()
   }
 
   async function toggleRmStatus(item) {
     setError('')
+    const nextActive = item.is_active === false
 
     if (!item.id) {
       const { error } = await supabase
         .from('rms')
-        .insert({
-          name: item.name,
-          is_active: false,
-          is_admin: false
-        })
-
+        .insert({ name: item.name, is_active: nextActive, is_admin: false })
       if (error && error.code !== '23505') {
         setError(error.message)
         return
       }
-
-      await loadRms()
-      return
+    } else {
+      const { error } = await supabase
+        .from('rms')
+        .update({ is_active: nextActive })
+        .eq('id', item.id)
+      if (error) {
+        setError(error.message)
+        return
+      }
     }
 
-    const { error } = await supabase
-      .from('rms')
-      .update({ is_active: !item.is_active })
-      .eq('id', item.id)
-
-    if (error) {
-      setError(error.message)
-      return
-    }
-
+    await notify(
+      nextActive ? 'RM activated' : 'RM marked inactive',
+      `${item.name} has been ${nextActive ? 'activated' : 'marked inactive'}.`
+    )
     await loadRms()
   }
 
-  async function toggleAdmin(item) {
+  function openAdminModal(item) {
+    if (item.is_admin) {
+      toggleAdmin(item, item.admin_email || '')
+      return
+    }
+    setAdminModal(item)
+    setAdminEmail(item.admin_email || '')
+  }
+
+  async function toggleAdmin(item, emailAddress) {
+    setError('')
+    const nextAdmin = !item.is_admin
+
     if (!item.id) {
       const { error } = await supabase
         .from('rms')
         .insert({
           name: item.name,
           is_active: true,
-          is_admin: true
+          is_admin: nextAdmin,
+          admin_email: nextAdmin ? emailAddress : null
         })
-
       if (error && error.code !== '23505') {
         setError(error.message)
         return
       }
-
-      await loadRms()
-      return
+    } else {
+      const { error } = await supabase
+        .from('rms')
+        .update({
+          is_admin: nextAdmin,
+          admin_email: nextAdmin ? emailAddress : null
+        })
+        .eq('id', item.id)
+      if (error) {
+        setError(error.message)
+        return
+      }
     }
 
-    const { error } = await supabase
-      .from('rms')
-      .update({ is_admin: !item.is_admin })
-      .eq('id', item.id)
-
-    if (error) {
-      setError(error.message)
-      return
-    }
-
+    await notify(
+      nextAdmin ? 'Admin access granted' : 'Admin access removed',
+      nextAdmin
+        ? `${item.name} has been granted admin access for ${emailAddress}.`
+        : `${item.name}'s admin access has been removed.`
+    )
+    setAdminModal(null)
+    setAdminEmail('')
     await loadRms()
+  }
+
+  async function confirmAdmin(e) {
+    e.preventDefault()
+    const cleanEmail = adminEmail.trim().toLowerCase()
+    if (!cleanEmail || !/^\S+@\S+\.\S+$/.test(cleanEmail)) {
+      setError('Please enter a valid email address for admin login access.')
+      return
+    }
+    await toggleAdmin(adminModal, cleanEmail)
   }
 
   const analysedRows = useMemo(
@@ -894,11 +966,37 @@ function App() {
           </div>
 
           <div className="headerActions">
+            <div className="notificationWrap">
+              <button
+                className="iconButton notificationBell"
+                onClick={async () => {
+                  setShowNotifications(v => !v)
+                  if (!showNotifications) await markNotificationsRead()
+                }}
+                title="Notifications"
+              >
+                <Bell size={18} />
+                {notifications.filter(x => !x.is_read).length > 0 && (
+                  <span className="notificationCount">{notifications.filter(x => !x.is_read).length}</span>
+                )}
+              </button>
+              {showNotifications && (
+                <div className="notificationPanel">
+                  <div className="notificationPanelHead"><strong>Notifications</strong><button onClick={() => setShowNotifications(false)}><X size={16} /></button></div>
+                  {notifications.length === 0 ? <p className="notificationEmpty">No notifications yet.</p> : notifications.map(n => (
+                    <div className={`notificationItem ${n.is_read ? '' : 'unread'}`} key={n.id}>
+                      <strong>{n.title}</strong><span>{n.body}</span><small>{new Date(n.created_at).toLocaleString('en-IN')}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               className="iconButton"
               onClick={() => {
                 loadData()
                 loadRms()
+                loadNotifications()
               }}
               title="Refresh"
             >
@@ -1322,6 +1420,7 @@ function App() {
 
                       <div className="rmName">
                         <strong>{item.name}</strong>
+                        {item.is_admin && item.admin_email && <small className="adminEmail">{item.admin_email}</small>}
                         <span className={item.is_admin ? 'statusAdmin' : 'statusInactive'}>
                           {item.is_admin ? 'Admin' : 'Standard access'}
                         </span>
@@ -1329,7 +1428,7 @@ function App() {
 
                       <button
                         className={item.is_admin ? 'deactivateButton' : 'activateButton'}
-                        onClick={() => toggleAdmin(item)}
+                        onClick={() => openAdminModal(item)}
                       >
                         {item.is_admin
                           ? <><CheckCircle2 size={14} /> Remove Admin</>
@@ -1342,6 +1441,24 @@ function App() {
             )}
           </section>
         )}
+
+        {adminModal && (
+          <div className="modalBackdrop" onMouseDown={() => setAdminModal(null)}>
+            <div className="adminModal" onMouseDown={e => e.stopPropagation()}>
+              <div className="modalHeader">
+                <div><h2>Grant Admin Access</h2><p>Enter the email address this employee will use to log in.</p></div>
+                <button className="modalClose" onClick={() => setAdminModal(null)}><X size={18} /></button>
+              </div>
+              <form onSubmit={confirmAdmin}>
+                <label>Login Email Address</label>
+                <div className="emailField"><Mail size={16} /><input autoFocus type="email" placeholder="name@snowballwealth.in" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} /></div>
+                <p className="modalNote">Admin access is linked to this email. The email must also have a valid Supabase Auth account to sign in.</p>
+                <div className="modalActions"><button type="button" onClick={() => setAdminModal(null)}>Cancel</button><button className="primaryButton" type="submit"><ShieldCheck size={16} /> Grant Admin Access</button></div>
+              </form>
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   )
