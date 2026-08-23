@@ -4,1655 +4,973 @@ import { createClient } from '@supabase/supabase-js'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-
 import {
-  LayoutDashboard,
-  TableProperties,
-  Settings,
-  LogOut,
-  Upload,
-  Download,
-  FileText,
-  RefreshCw,
-  Users,
-  Plus,
-  UserCheck,
-  UserX,
-  ChevronRight
+  Upload, Download, FileText, LogOut, RefreshCw,
+  LayoutDashboard, Table2, Settings, Users,
+  Eye, EyeOff, ArrowLeft, UserPlus, UserMinus,
+  ShieldCheck, CheckCircle2, CircleDot
 } from 'lucide-react'
-
+import logoUrl from './logo.png'
 import './styles.css'
-import logo from './logo.png'
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 )
 
-const money = (value) =>
+const money = n =>
   new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
     maximumFractionDigits: 0
-  }).format(Number(value || 0))
+  }).format(Number(n || 0))
 
-const numberFormat = (value) =>
-  new Intl.NumberFormat('en-IN', {
-    maximumFractionDigits: 0
-  }).format(Number(value || 0))
+const compactMoney = n => {
+  const value = Number(n || 0)
+  if (value >= 10000000) return `₹${(value / 10000000).toFixed(2)} Cr`
+  if (value >= 100000) return `₹${(value / 100000).toFixed(2)} L`
+  return money(value)
+}
 
-const normalize = (value) =>
-  String(value || '')
+const norm = s =>
+  String(s || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
 
-const formatDate = (value) => {
-  if (!value) return '-'
+const iso = v => {
+  if (!v) return null
+  if (v instanceof Date) return v.toISOString().slice(0, 10)
+  if (typeof v === 'number') {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    return new Date(excelEpoch.getTime() + v * 86400000)
+      .toISOString()
+      .slice(0, 10)
+  }
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
+}
 
-  const date = new Date(`${value}T00:00:00`)
+function sourceLabel(value) {
+  const text = String(value || '').toLowerCase()
+  if (text.includes('swp') || text.includes('systematic withdrawal')) return 'SWP'
+  if (text.includes('switch')) return 'Switch'
+  if (text.includes('stp') || text.includes('systematic transfer')) return 'STP'
+  if (text.includes('red') || text.includes('redeem')) return 'Redemption'
+  return value || 'Redemption'
+}
 
-  if (Number.isNaN(date.getTime())) return value
+function explicitClassification(value) {
+  const label = sourceLabel(value)
+  if (['SWP', 'Switch', 'STP'].includes(label)) return label
+  return null
+}
 
-  return date.toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric'
+function classifyRows(rows) {
+  const output = rows.map(row => ({ ...row }))
+  const groups = new Map()
+
+  output.forEach((row, index) => {
+    const key = [
+      norm(row.investor_name),
+      norm(row.folio_no),
+      norm(row.scheme)
+    ].join('|')
+
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push({ row, index })
   })
+
+  groups.forEach(items => {
+    items.sort((a, b) =>
+      String(a.row.transaction_date || '').localeCompare(
+        String(b.row.transaction_date || '')
+      )
+    )
+
+    const explicit = items.map(item =>
+      explicitClassification(item.row.original_transaction_type)
+    )
+
+    items.forEach((item, position) => {
+      if (explicit[position]) {
+        item.row.display_classification = explicit[position]
+        return
+      }
+
+      const current = item.row
+      const currentDate = new Date(`${current.transaction_date}T00:00:00`)
+      const currentAmount = Number(current.amount || 0)
+
+      const prior = items
+        .slice(Math.max(0, position - 4), position)
+        .filter(x => !explicitClassification(x.row.original_transaction_type))
+        .map(x => ({
+          date: new Date(`${x.row.transaction_date}T00:00:00`),
+          amount: Number(x.row.amount || 0)
+        }))
+
+      const recurring = prior.filter(x => {
+        const days = Math.round(
+          Math.abs(currentDate - x.date) / 86400000
+        )
+        const amountDiff =
+          Math.abs(currentAmount - x.amount) /
+          Math.max(Math.max(currentAmount, x.amount), 1)
+
+        return days >= 20 && days <= 45 && amountDiff <= 0.35
+      })
+
+      const existing =
+        current.classified_transaction_type &&
+        current.classified_transaction_type !== 'Needs Review'
+          ? current.classified_transaction_type
+          : null
+
+      item.row.display_classification =
+        recurring.length >= 2 ? 'SWP' : (existing || 'Redemption')
+    })
+  })
+
+  return output
 }
 
-const toISODate = (value) => {
-  if (!value) return null
-
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10)
-  }
-
-  if (typeof value === 'number') {
-    const parsed = XLSX.SSF.parse_date_code(value)
-
-    if (parsed) {
-      const month = String(parsed.m).padStart(2, '0')
-      const day = String(parsed.d).padStart(2, '0')
-
-      return `${parsed.y}-${month}-${day}`
-    }
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) return null
-
-  return date.toISOString().slice(0, 10)
-}
-
-function mapExcelRow(row) {
+function mapRow(row) {
   const lookup = Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [normalize(key), value])
+    Object.entries(row).map(([k, v]) => [norm(k), v])
   )
 
-  const get = (...keys) => {
-    for (const key of keys) {
-      const value = lookup[normalize(key)]
+  const get = (...keys) =>
+    keys
+      .map(k => lookup[norm(k)])
+      .find(v => v !== undefined && v !== null && v !== '')
 
-      if (value !== undefined && value !== null && value !== '') {
-        return value
-      }
-    }
-
-    return null
-  }
-
-  const rawAmount = get(
-    'Amount(₹)',
-    'Amount',
-    'Transaction Amount',
-    'Value'
+  const amountRaw = get(
+    'Amount(₹)', 'Amount', 'amount', 'Transaction Amount'
   )
 
   const amount =
-    typeof rawAmount === 'number'
-      ? rawAmount
-      : Number(
-          String(rawAmount || '').replace(/[₹,\s]/g, '')
-        )
+    typeof amountRaw === 'number'
+      ? amountRaw
+      : Number(String(amountRaw || '').replace(/[₹,\s]/g, ''))
 
-  const rawType = String(
+  const originalType =
     get(
       'Type',
       'Transaction Type',
-      'TransactionType',
-      'Nature'
-    ) || ''
-  ).trim()
+      'Source',
+      'original_transaction_type'
+    ) || null
 
   return {
-    rm_name:
-      get(
-        'Partner/Employee',
-        'Partner Employee',
-        'RM',
-        'RM Name',
-        'Employee'
-      ) || null,
-
-    group_name:
-      get('Group', 'Group Name') || null,
-
-    investor_name:
-      get(
-        'Investor',
-        'Investor Name',
-        'Client',
-        'Client Name'
-      ) || null,
-
-    transaction_date:
-      toISODate(
-        get(
-          'Date',
-          'Transaction Date',
-          'Txn Date'
-        )
-      ),
-
+    rm_name: get(
+      'Partner/Employee',
+      'Partner',
+      'Employee',
+      'RM',
+      'rm_name'
+    ) || null,
+    group_name: get('Group', 'group_name') || null,
+    investor_name: get(
+      'Investor',
+      'Investor Name',
+      'Client Name',
+      'investor_name'
+    ) || null,
+    transaction_date: iso(
+      get('Date', 'Transaction Date', 'transaction_date')
+    ),
     folio_no: String(
       get(
         'Folio No/Demat A/C',
         'Folio No',
         'Folio',
-        'Demat A/C'
+        'folio_no'
       ) || ''
     ) || null,
-
-    scheme:
-      get(
-        'Scheme',
-        'Scheme Name',
-        'Fund'
-      ) || null,
-
+    scheme: get('Scheme', 'Fund', 'scheme') || null,
     amount: Number.isFinite(amount) ? amount : null,
-
-    transaction_type: 'Imported',
-
-    original_transaction_type: rawType || null,
-
-    classified_transaction_type: null,
-
-    classification_status: 'Needs Review',
-
+    original_transaction_type: sourceLabel(originalType),
+    classified_transaction_type: explicitClassification(originalType) || 'Redemption',
+    classification_status: 'Completed',
     classification_reason: null
   }
 }
 
-/*
-  Automatic classification.
-
-  Priority:
-  1. Explicit transaction type in Excel
-  2. Recurring same investor/folio/scheme pattern = SWP
-  3. Switch keywords = Switch
-  4. STP keywords = STP
-  5. Remaining transactions = Redemption
-*/
-
-function classifyTransactions(rows) {
-  const prepared = rows.map((row) => ({
-    ...row,
-    classified_transaction_type: null
-  }))
-
-  const groups = {}
-
-  prepared.forEach((row, index) => {
-    const investor = normalize(row.investor_name)
-    const folio = normalize(row.folio_no)
-    const scheme = normalize(row.scheme)
-
-    const key = `${investor}|${folio}|${scheme}`
-
-    if (!groups[key]) groups[key] = []
-
-    groups[key].push(index)
-  })
-
-  Object.values(groups).forEach((indexes) => {
-    indexes.sort((a, b) => {
-      return new Date(prepared[a].transaction_date) -
-        new Date(prepared[b].transaction_date)
-    })
-
-    const recurringIndexes = new Set()
-
-    for (let i = 1; i < indexes.length; i++) {
-      const previous = prepared[indexes[i - 1]]
-      const current = prepared[indexes[i]]
-
-      const previousDate = new Date(
-        `${previous.transaction_date}T00:00:00`
-      )
-
-      const currentDate = new Date(
-        `${current.transaction_date}T00:00:00`
-      )
-
-      const difference =
-        (currentDate - previousDate) /
-        (1000 * 60 * 60 * 24)
-
-      const previousAmount = Number(previous.amount || 0)
-      const currentAmount = Number(current.amount || 0)
-
-      const amountDifference =
-        previousAmount === 0
-          ? 100
-          : Math.abs(currentAmount - previousAmount) /
-            previousAmount *
-            100
-
-      /*
-        Monthly / approximately recurring withdrawal pattern.
-      */
-      if (
-        difference >= 20 &&
-        difference <= 40 &&
-        amountDifference <= 20
-      ) {
-        recurringIndexes.add(indexes[i - 1])
-        recurringIndexes.add(indexes[i])
-      }
-    }
-
-    recurringIndexes.forEach((index) => {
-      if (!prepared[index].classified_transaction_type) {
-        prepared[index].classified_transaction_type = 'SWP'
-      }
-    })
-  })
-
-  return prepared.map((row) => {
-    const source = `${row.original_transaction_type || ''} ${
-      row.scheme || ''
-    }`.toLowerCase()
-
-    let classification = row.classified_transaction_type
-
-    if (
-      source.includes('stp') ||
-      source.includes('systematic transfer')
-    ) {
-      classification = 'STP'
-    } else if (
-      source.includes('switch')
-    ) {
-      classification = 'Switch'
-    } else if (
-      source.includes('swp') ||
-      source.includes('systematic withdrawal')
-    ) {
-      classification = 'SWP'
-    }
-
-    if (!classification) {
-      classification = 'Redemption'
-    }
-
-    return {
-      ...row,
-      classified_transaction_type: classification,
-      classification_status: 'Classified'
-    }
-  })
-}
-
 function App() {
   const [session, setSession] = useState(null)
-
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-
-  const [loading, setLoading] = useState(false)
-  const [uploading, setUploading] = useState(false)
-
+  const [showPassword, setShowPassword] = useState(false)
+  const [forgotMode, setForgotMode] = useState(false)
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotMessage, setForgotMessage] = useState('')
   const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(false)
 
   const [page, setPage] = useState('dashboard')
-
   const [rows, setRows] = useState([])
   const [rms, setRms] = useState([])
-
-  const [rmFilter, setRmFilter] = useState('All')
-  const [period, setPeriod] = useState('YTD')
-
+  const [rm, setRm] = useState('All')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
-
-  const [newRM, setNewRM] = useState('')
+  const [period, setPeriod] = useState('YTD')
+  const [uploading, setUploading] = useState(false)
+  const [message, setMessage] = useState('')
+  const [newRm, setNewRm] = useState('')
+  const [settingsTab, setSettingsTab] = useState('current')
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 50
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-    })
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange(
-      (_event, currentSession) => {
-        setSession(currentSession)
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession)
+      if (!newSession) {
+        setPage('dashboard')
+        setRows([])
+        setRms([])
       }
-    )
+    })
 
     return () => subscription.unsubscribe()
   }, [])
 
   useEffect(() => {
     if (session) {
-      loadAllData()
+      loadData()
+      loadRms()
     }
   }, [session])
 
-  async function login(event) {
-    event.preventDefault()
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [rm, from, to, period])
 
+  async function login(e) {
+    e.preventDefault()
     setLoading(true)
     setError('')
 
-    try {
-      const { error: loginError } =
-        await supabase.auth.signInWithPassword({
-          email,
-          password
-        })
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    })
 
-      if (loginError) {
-        throw loginError
-      }
-    } catch (err) {
-      setError(err.message || 'Unable to login.')
-    } finally {
-      setLoading(false)
-    }
+    if (error) setError(error.message)
+    setLoading(false)
   }
 
-  async function logout() {
-    try {
-      setLoading(true)
-      setError('')
+  async function sendResetPassword(e) {
+    e.preventDefault()
+    setError('')
+    setForgotMessage('')
+    setLoading(true)
 
-      await supabase.auth.signOut()
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      forgotEmail,
+      { redirectTo: window.location.origin }
+    )
 
-      setSession(null)
-      setEmail('')
-      setPassword('')
-
-      /*
-        Remove any locally cached Supabase session.
-      */
-      Object.keys(localStorage).forEach((key) => {
-        if (
-          key.startsWith('sb-') ||
-          key.includes('supabase')
-        ) {
-          localStorage.removeItem(key)
-        }
-      })
-
-      window.location.reload()
-    } catch (err) {
-      setError(err.message || 'Unable to logout.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function loadTransactions() {
-    const { data, error: transactionError } =
-      await supabase
-        .from('transactions')
-        .select('*')
-        .order('transaction_date', {
-          ascending: false
-        })
-
-    if (transactionError) {
-      throw transactionError
+    if (error) {
+      setError(error.message)
+    } else {
+      setForgotMessage(
+        'Password reset instructions have been sent to your email.'
+      )
     }
 
-    setRows(data || [])
+    setLoading(false)
   }
 
-  async function loadRMs() {
-    /*
-      We first try to load the dedicated RMS table.
-      If your existing database table is named differently,
-      this can be adjusted later.
-    */
+  async function handleLogout() {
+    setError('')
+    await supabase.auth.signOut()
+    setSession(null)
+    setPage('dashboard')
+    setRows([])
+    setRms([])
+    window.location.replace(window.location.origin)
+  }
 
-    const { data, error: rmError } =
-      await supabase
-        .from('rms')
-        .select('*')
-        .order('rm_name', {
-          ascending: true
-        })
+  async function loadData() {
+    setLoading(true)
 
-    if (!rmError) {
-      setRms(data || [])
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .order('transaction_date', { ascending: false })
+
+    if (error) setError(error.message)
+    else setRows(data || [])
+
+    setLoading(false)
+  }
+
+  async function loadRms() {
+    const { data, error } = await supabase
+      .from('rms')
+      .select('*')
+      .order('name')
+
+    if (error) {
+      console.error(error)
       return
     }
 
-    /*
-      Fallback: derive RM names from transactions.
-    */
-
-    const { data: transactionData } =
-      await supabase
-        .from('transactions')
-        .select('rm_name')
-
-    const names = Array.from(
-      new Set(
-        (transactionData || [])
-          .map((item) => item.rm_name)
-          .filter(Boolean)
-      )
-    ).sort()
-
-    setRms(
-      names.map((rm_name) => ({
-        id: rm_name,
-        rm_name,
-        is_active: true,
-        fallback: true
-      }))
-    )
+    setRms(data || [])
   }
 
-  async function loadAllData() {
-    setLoading(true)
+  async function addRm(e) {
+    e.preventDefault()
+    const name = newRm.trim()
+    if (!name) return
+
     setError('')
 
-    try {
-      await Promise.all([
-        loadTransactions(),
-        loadRMs()
-      ])
-    } catch (err) {
-      setError(err.message || 'Unable to load data.')
-    } finally {
-      setLoading(false)
+    const { error } = await supabase
+      .from('rms')
+      .insert({
+        name,
+        is_active: true,
+        is_admin: false
+      })
+
+    if (error) {
+      setError(
+        error.code === '23505'
+          ? 'This RM already exists.'
+          : error.message
+      )
+      return
     }
+
+    setNewRm('')
+    setMessage(`${name} added successfully.`)
+    await loadRms()
   }
 
-  const activeRMs = useMemo(() => {
-    return rms.filter(
-      (item) => item.is_active !== false
-    )
-  }, [rms])
+  async function toggleRmStatus(item) {
+    setError('')
 
-  const rmNames = useMemo(() => {
-    return [
-      'All',
-      ...activeRMs
-        .map((item) => item.rm_name)
-        .filter(Boolean)
-        .sort()
-    ]
-  }, [activeRMs])
+    if (!item.id) {
+      const { error } = await supabase
+        .from('rms')
+        .insert({
+          name: item.name,
+          is_active: false,
+          is_admin: false
+        })
 
-  const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
-      if (
-        rmFilter !== 'All' &&
-        row.rm_name !== rmFilter
-      ) {
-        return false
+      if (error && error.code !== '23505') {
+        setError(error.message)
+        return
       }
 
-      const transactionDate =
-        row.transaction_date
+      await loadRms()
+      return
+    }
 
-      if (!transactionDate) return false
+    const { error } = await supabase
+      .from('rms')
+      .update({ is_active: !item.is_active })
+      .eq('id', item.id)
 
-      if (from && transactionDate < from) {
-        return false
+    if (error) {
+      setError(error.message)
+      return
+    }
+
+    await loadRms()
+  }
+
+  async function toggleAdmin(item) {
+    if (!item.id) {
+      const { error } = await supabase
+        .from('rms')
+        .insert({
+          name: item.name,
+          is_active: true,
+          is_admin: true
+        })
+
+      if (error && error.code !== '23505') {
+        setError(error.message)
+        return
       }
 
-      if (to && transactionDate > to) {
-        return false
-      }
+      await loadRms()
+      return
+    }
+
+    const { error } = await supabase
+      .from('rms')
+      .update({ is_admin: !item.is_admin })
+      .eq('id', item.id)
+
+    if (error) {
+      setError(error.message)
+      return
+    }
+
+    await loadRms()
+  }
+
+  const analysedRows = useMemo(
+    () => classifyRows(rows),
+    [rows]
+  )
+
+  const rmDirectory = useMemo(() => {
+    const map = new Map()
+
+    analysedRows
+      .map(x => String(x.rm_name || '').trim())
+      .filter(Boolean)
+      .forEach(name => {
+        map.set(norm(name), {
+          id: null,
+          name,
+          is_active: true,
+          is_admin: false,
+          imported: true
+        })
+      })
+
+    rms.forEach(item => {
+      const key = norm(item.name)
+      const previous = map.get(key)
+
+      map.set(key, {
+        ...(previous || {}),
+        ...item,
+        name: item.name
+      })
+    })
+
+    return Array.from(map.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [analysedRows, rms])
+
+  const activeRmNames = useMemo(() => [
+    'All',
+    ...rmDirectory
+      .filter(x => x.is_active !== false)
+      .map(x => x.name)
+  ], [rmDirectory])
+
+  const filtered = useMemo(() => {
+    return analysedRows.filter(x => {
+      if (rm !== 'All' && x.rm_name !== rm) return false
+
+      const d = x.transaction_date
+      if (!d) return false
+      if (from && d < from) return false
+      if (to && d > to) return false
 
       if (!from && !to) {
         const now = new Date()
-
-        const date = new Date(
-          `${transactionDate}T00:00:00`
-        )
+        const dt = new Date(`${d}T00:00:00`)
 
         if (period === 'WTD') {
-          const day =
-            (now.getDay() + 6) % 7
-
+          const day = (now.getDay() + 6) % 7
           const start = new Date(now)
-
-          start.setDate(
-            now.getDate() - day
-          )
-
+          start.setDate(now.getDate() - day)
           start.setHours(0, 0, 0, 0)
-
-          if (date < start) return false
+          if (dt < start) return false
         }
 
         if (
           period === 'MTD' &&
           (
-            date.getMonth() !== now.getMonth() ||
-            date.getFullYear() !== now.getFullYear()
+            dt.getMonth() !== now.getMonth() ||
+            dt.getFullYear() !== now.getFullYear()
           )
-        ) {
-          return false
-        }
+        ) return false
 
         if (period === 'QTD') {
-          const currentQuarter =
-            Math.floor(now.getMonth() / 3)
-
-          const rowQuarter =
-            Math.floor(date.getMonth() / 3)
-
+          const q = Math.floor(now.getMonth() / 3)
           if (
-            date.getFullYear() !== now.getFullYear() ||
-            rowQuarter !== currentQuarter
-          ) {
-            return false
-          }
+            dt.getFullYear() !== now.getFullYear() ||
+            Math.floor(dt.getMonth() / 3) !== q
+          ) return false
         }
 
         if (
           period === 'YTD' &&
-          date.getFullYear() !== now.getFullYear()
-        ) {
-          return false
-        }
+          dt.getFullYear() !== now.getFullYear()
+        ) return false
       }
 
       return true
     })
-  }, [
-    rows,
-    rmFilter,
-    from,
-    to,
-    period
-  ])
+  }, [analysedRows, rm, from, to, period])
 
   const totals = useMemo(() => {
-    const getTotal = (type) =>
-      filteredRows
-        .filter(
-          (row) =>
-            row.classified_transaction_type === type
-        )
-        .reduce(
-          (sum, row) =>
-            sum + Number(row.amount || 0),
-          0
-        )
+    const sum = type =>
+      filtered
+        .filter(x => x.display_classification === type)
+        .reduce((total, x) => total + Number(x.amount || 0), 0)
 
     return {
-      Redemption: getTotal('Redemption'),
-      SWP: getTotal('SWP'),
-      Switch: getTotal('Switch'),
-      STP: getTotal('STP'),
+      Redemption: sum('Redemption'),
+      SWP: sum('SWP'),
+      Switch: sum('Switch'),
+      STP: sum('STP'),
       Investors: new Set(
-        filteredRows
-          .map((row) => row.investor_name)
-          .filter(Boolean)
+        filtered.map(x => x.investor_name).filter(Boolean)
       ).size,
-      Transactions: filteredRows.length
+      Transactions: filtered.length
     }
-  }, [filteredRows])
+  }, [filtered])
 
-  const classificationData = useMemo(() => {
-    const values = [
-      {
-        label: 'Redemption',
-        value: totals.Redemption,
-        className: 'redemption'
-      },
-      {
-        label: 'SWP',
-        value: totals.SWP,
-        className: 'swp'
-      },
-      {
-        label: 'Switch',
-        value: totals.Switch,
-        className: 'switch'
-      },
-      {
-        label: 'STP',
-        value: totals.STP,
-        className: 'stp'
-      }
-    ]
-
-    return values
-  }, [totals])
-
-  const rmChartData = useMemo(() => {
-    const totalsByRM = {}
-
-    filteredRows.forEach((row) => {
-      const name = row.rm_name || 'Others'
-
-      totalsByRM[name] =
-        (totalsByRM[name] || 0) +
-        Number(row.amount || 0)
+  const chartData = useMemo(() => {
+    const map = {}
+    filtered.forEach(x => {
+      const key = x.rm_name || 'Unassigned'
+      map[key] = (map[key] || 0) + Number(x.amount || 0)
     })
 
-    return Object.entries(totalsByRM)
-      .map(([name, value]) => ({
-        name,
-        value
-      }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6)
-  }, [filteredRows])
+    return Object.entries(map)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 10)
+  }, [filtered])
 
-  const monthlyData = useMemo(() => {
-    const months = {}
+  const maxChartValue = useMemo(
+    () => Math.max(...chartData.map(x => x.amount), 1),
+    [chartData]
+  )
 
-    filteredRows.forEach((row) => {
-      if (!row.transaction_date) return
+  const classificationChart = useMemo(() => [
+    { name: 'Redemption', amount: totals.Redemption, color: '#c9565a' },
+    { name: 'SWP', amount: totals.SWP, color: '#5a9b88' },
+    { name: 'Switch', amount: totals.Switch, color: '#597aa1' },
+    { name: 'STP', amount: totals.STP, color: '#8067a8' }
+  ], [totals])
 
-      const key =
-        row.transaction_date.slice(0, 7)
+  const classificationTotal = useMemo(
+    () => classificationChart.reduce((sum, x) => sum + x.amount, 0),
+    [classificationChart]
+  )
 
-      if (!months[key]) {
-        months[key] = {
-          Redemption: 0,
-          SWP: 0,
-          Switch: 0,
-          STP: 0
-        }
-      }
+  const donutStyle = useMemo(() => {
+    if (!classificationTotal) {
+      return { background: 'conic-gradient(#dfe5ed 0 100%)' }
+    }
 
-      const type =
-        row.classified_transaction_type
+    let cursor = 0
+    const parts = classificationChart
+      .filter(x => x.amount > 0)
+      .map(x => {
+        const next = cursor + (x.amount / classificationTotal) * 100
+        const part = `${x.color} ${cursor}% ${next}%`
+        cursor = next
+        return part
+      })
 
-      if (months[key] && months[key][type] !== undefined) {
-        months[key][type] +=
-          Number(row.amount || 0)
-      }
+    return {
+      background: `conic-gradient(${parts.join(', ')})`
+    }
+  }, [classificationChart, classificationTotal])
+
+  const monthlyTrend = useMemo(() => {
+    const map = new Map()
+    filtered.forEach(x => {
+      const key = String(x.transaction_date || '').slice(0, 7)
+      if (!key) return
+      if (!map.has(key)) map.set(key, {
+        Redemption: 0, SWP: 0, Switch: 0, STP: 0
+      })
+      const bucket = map.get(key)
+      bucket[x.display_classification] =
+        (bucket[x.display_classification] || 0) + Number(x.amount || 0)
     })
 
-    return Object.entries(months)
-      .sort(([a], [b]) =>
-        a.localeCompare(b)
-      )
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
       .slice(-6)
-      .map(([month, values]) => ({
-        month,
-        ...values
-      }))
-  }, [filteredRows])
+      .map(([month, values]) => ({ month, ...values }))
+  }, [filtered])
 
-  async function uploadFile(event) {
-    const file = event.target.files?.[0]
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filtered.slice(start, start + pageSize)
+  }, [filtered, currentPage])
 
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filtered.length / pageSize)
+  )
+
+  async function uploadFile(e) {
+    const file = e.target.files?.[0]
     if (!file) return
 
     setUploading(true)
     setError('')
-    setMessage('Reading Excel file...')
+    setMessage('Reading and analysing Excel file...')
 
     try {
-      const buffer =
-        await file.arrayBuffer()
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, {
+        type: 'array',
+        cellDates: true
+      })
 
-      const workbook = XLSX.read(
-        buffer,
-        {
-          type: 'array',
-          cellDates: true
-        }
-      )
-
-      const worksheet =
-        workbook.Sheets[
-          workbook.SheetNames[0]
-        ]
-
-      const raw =
-        XLSX.utils.sheet_to_json(
-          worksheet,
-          {
-            defval: null,
-            raw: true
-          }
-        )
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const raw = XLSX.utils.sheet_to_json(ws, {
+        defval: null,
+        raw: false
+      })
 
       const mapped = raw
-        .map(mapExcelRow)
+        .map(mapRow)
         .filter(
-          (row) =>
-            row.investor_name &&
-            row.transaction_date &&
-            row.amount !== null
+          r =>
+            r.investor_name &&
+            r.transaction_date &&
+            r.amount != null
         )
 
       if (!mapped.length) {
         throw new Error(
-          'No valid transactions were found in this Excel file.'
+          'No valid transactions found. Please use the normal Snowball transaction Excel format.'
         )
       }
 
-      setMessage(
-        `Analysing ${mapped.length} transactions...`
-      )
+      const analysed = classifyRows(mapped).map(x => ({
+        ...x,
+        classified_transaction_type: x.display_classification,
+        classification_reason: null
+      }))
 
-      /*
-        Bring existing data into the analysis so recurring
-        SWP patterns can also be identified against history.
-      */
+      setMessage(`Uploading ${analysed.length} analysed transactions...`)
 
-      const existingForAnalysis =
-        rows.map((row) => ({
-          ...row
-        }))
+      for (let i = 0; i < analysed.length; i += 500) {
+        const payload = analysed
+          .slice(i, i + 500)
+          .map(({ display_classification, ...row }) => row)
 
-      const analysed = classifyTransactions([
-        ...existingForAnalysis,
-        ...mapped
-      ])
+        const { error } = await supabase
+          .from('transactions')
+          .insert(payload)
 
-      const classifiedUpload =
-        analysed.slice(existingForAnalysis.length)
-
-      setMessage(
-        `Uploading ${classifiedUpload.length} classified transactions...`
-      )
-
-      for (
-        let index = 0;
-        index < classifiedUpload.length;
-        index += 500
-      ) {
-        const batch =
-          classifiedUpload.slice(
-            index,
-            index + 500
-          )
-
-        const {
-          error: uploadError
-        } =
-          await supabase
-            .from('transactions')
-            .insert(batch)
-
-        if (uploadError) {
-          throw uploadError
-        }
+        if (error) throw error
       }
 
-      setMessage(
-        'Excel uploaded and transactions classified successfully.'
-      )
-
-      await loadAllData()
+      setMessage('Excel analysed successfully. Transaction data and dashboard updated.')
+      await loadData()
+      await loadRms()
     } catch (err) {
-      setError(
-        err.message ||
-          'Unable to upload the Excel file.'
-      )
-
+      setError(err.message)
       setMessage('')
-    } finally {
-      setUploading(false)
-      event.target.value = ''
-    }
-  }
-
-  async function addRM() {
-    const name = newRM.trim()
-
-    if (!name) return
-
-    setError('')
-    setMessage('')
-
-    try {
-      const existing = rms.find(
-        (item) =>
-          normalize(item.rm_name) ===
-          normalize(name)
-      )
-
-      if (existing) {
-        throw new Error(
-          'This RM already exists.'
-        )
-      }
-
-      const {
-        error: insertError
-      } =
-        await supabase
-          .from('rms')
-          .insert({
-            rm_name: name,
-            is_active: true
-          })
-
-      if (insertError) {
-        throw insertError
-      }
-
-      setNewRM('')
-      setMessage('RM added successfully.')
-
-      await loadRMs()
-    } catch (err) {
-      setError(err.message)
-    }
-  }
-
-  async function toggleRM(item) {
-    if (item.fallback) {
-      setError(
-        'The RM management table is not yet available in Supabase.'
-      )
-
-      return
     }
 
-    try {
-      const {
-        error: updateError
-      } =
-        await supabase
-          .from('rms')
-          .update({
-            is_active:
-              item.is_active === false
-                ? true
-                : false
-          })
-          .eq('id', item.id)
-
-      if (updateError) {
-        throw updateError
-      }
-
-      await loadRMs()
-
-      setMessage(
-        item.is_active === false
-          ? 'RM activated successfully.'
-          : 'RM marked inactive successfully.'
-      )
-    } catch (err) {
-      setError(err.message)
-    }
+    setUploading(false)
+    e.target.value = ''
   }
 
   function exportExcel() {
-    const output = filteredRows.map(
-      (row) => ({
-        Date: row.transaction_date,
-        RM: row.rm_name,
-        Investor: row.investor_name,
-        Folio: row.folio_no,
-        Scheme: row.scheme,
-        Amount: row.amount,
-        Source:
-          row.classified_transaction_type,
-        Classification:
-          row.classified_transaction_type
-      })
-    )
+    const out = filtered.map(x => ({
+      Date: x.transaction_date,
+      RM: x.rm_name,
+      Investor: x.investor_name,
+      Folio: x.folio_no,
+      Scheme: x.scheme,
+      Amount: x.amount,
+      Source: sourceLabel(x.original_transaction_type),
+      Classification: x.display_classification
+    }))
 
-    const worksheet =
-      XLSX.utils.json_to_sheet(output)
-
-    const workbook =
-      XLSX.utils.book_new()
-
-    XLSX.utils.book_append_sheet(
-      workbook,
-      worksheet,
-      'Transaction Data'
-    )
-
-    XLSX.writeFile(
-      workbook,
-      'snowball-transaction-report.xlsx'
-    )
+    const ws = XLSX.utils.json_to_sheet(out)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Snowball Tracker')
+    XLSX.writeFile(wb, 'snowball-transaction-report.xlsx')
   }
 
   function exportPDF() {
-    const doc = new jsPDF({
-      orientation: 'landscape'
-    })
-
-    doc.setFontSize(16)
-
-    doc.text(
-      'Snowball Redemption Tracker',
-      14,
-      15
-    )
-
-    doc.setFontSize(9)
-
-    doc.text(
-      `Period: ${
-        from || to
-          ? `${from || ''} to ${to || ''}`
-          : period
-      }`,
-      14,
-      22
-    )
+    const doc = new jsPDF({ orientation: 'landscape' })
+    doc.setFontSize(17)
+    doc.text('Snowball Financial Services', 14, 14)
+    doc.setFontSize(11)
+    doc.text('Transaction & Redemption Analysis', 14, 21)
 
     autoTable(doc, {
       startY: 28,
-
       head: [[
-        'Date',
-        'RM',
-        'Investor',
-        'Scheme',
-        'Amount',
-        'Classification'
+        'Date', 'RM', 'Investor', 'Scheme',
+        'Amount', 'Source', 'Classification'
       ]],
-
-      body: filteredRows.map(
-        (row) => [
-          formatDate(row.transaction_date),
-          row.rm_name || '-',
-          row.investor_name || '-',
-          String(row.scheme || '').slice(0, 35),
-          money(row.amount),
-          row.classified_transaction_type || '-'
-        ]
-      )
+      body: filtered.map(x => [
+        x.transaction_date,
+        x.rm_name,
+        x.investor_name,
+        (x.scheme || '').slice(0, 35),
+        money(x.amount),
+        sourceLabel(x.original_transaction_type),
+        x.display_classification
+      ])
     })
 
-    doc.save(
-      'snowball-transaction-report.pdf'
-    )
+    doc.save('snowball-transaction-report.pdf')
   }
 
-  const maxRMValue =
-    Math.max(
-      ...rmChartData.map(
-        (item) => item.value
-      ),
-      1
-    )
-
-  const maxClassification =
-    Math.max(
-      ...classificationData.map(
-        (item) => item.value
-      ),
-      1
-    )
-
   if (!session) {
+    if (forgotMode) {
+      return (
+        <main className="loginPage">
+          <section className="loginCard">
+            <button
+              className="backLink"
+              onClick={() => {
+                setForgotMode(false)
+                setError('')
+                setForgotMessage('')
+              }}
+            >
+              <ArrowLeft size={16} />
+              Back to login
+            </button>
+
+            <h2>Reset Password</h2>
+            <p className="loginSub">
+              Enter your registered email address and we will send reset instructions.
+            </p>
+
+            <form onSubmit={sendResetPassword}>
+              <label>Email Address</label>
+              <input
+                type="email"
+                placeholder="Enter your email"
+                value={forgotEmail}
+                onChange={e => setForgotEmail(e.target.value)}
+                required
+              />
+
+              <button
+                className="primaryButton fullButton"
+                disabled={loading}
+              >
+                {loading ? 'Sending...' : 'Send Reset Instructions'}
+              </button>
+
+              {error && <div className="error">{error}</div>}
+              {forgotMessage && (
+                <div className="successBox">{forgotMessage}</div>
+              )}
+            </form>
+          </section>
+        </main>
+      )
+    }
+
     return (
-      <main className="login-page">
-        <section className="login-card">
-          <img
-            src={logo}
-            className="login-logo"
-            alt="Snowball Financial Services"
-          />
-
+      <main className="loginPage">
+        <section className="loginCard">
           <h1>Snowball Redemption Tracker</h1>
-
-          <p>
-            Analyse transactions and monitor
-            redemption activity
+          <p className="loginSub">
+            Login to access the transaction dashboard.
           </p>
 
           <form onSubmit={login}>
+            <label>Email Address</label>
             <input
               type="email"
-              placeholder="Email"
+              placeholder="Enter your email"
               value={email}
-              onChange={(event) =>
-                setEmail(event.target.value)
-              }
+              onChange={e => setEmail(e.target.value)}
               required
             />
 
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(event) =>
-                setPassword(event.target.value)
-              }
-              required
-            />
+            <label>Password</label>
+            <div className="passwordWrap">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                placeholder="Enter your password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+              />
+              <button
+                type="button"
+                className="passwordToggle"
+                onClick={() => setShowPassword(!showPassword)}
+              >
+                {showPassword
+                  ? <EyeOff size={18} />
+                  : <Eye size={18} />}
+              </button>
+            </div>
 
             <button
-              type="submit"
-              className="login-button"
+              className="primaryButton fullButton"
               disabled={loading}
             >
-              {loading
-                ? 'Signing in...'
-                : 'Login'}
+              {loading ? 'Logging in...' : 'Login'}
             </button>
 
             <button
               type="button"
-              className="forgot-password"
-              onClick={() =>
-                setMessage(
-                  'Please contact the administrator to reset your password.'
-                )
-              }
+              className="forgotLink"
+              onClick={() => {
+                setForgotMode(true)
+                setError('')
+              }}
             >
               Forgot / Reset Password?
             </button>
 
-            {error && (
-              <div className="error">
-                {error}
-              </div>
-            )}
-
-            {message && (
-              <div className="message">
-                {message}
-              </div>
-            )}
+            {error && <div className="error">{error}</div>}
           </form>
         </section>
       </main>
     )
   }
 
-  return (
-    <main className="app-shell">
+  const title =
+    page === 'dashboard'
+      ? 'Snowball Redemption Tracker'
+      : page === 'transactions'
+        ? 'Transaction Data'
+        : 'Settings'
 
+  return (
+    <div className="appShell">
       <aside className="sidebar">
-        <div className="brand">
-          <img
-            src={logo}
-            alt="Snowball Financial Services"
-          />
+        <div className="sidebarBrand">
+          <img src={logoUrl} alt="Snowball Financial Services" />
         </div>
 
-        <nav className="navigation">
-
+        <nav className="sidebarNav">
           <button
-            className={
-              page === 'dashboard'
-                ? 'nav-item active'
-                : 'nav-item'
-            }
-            onClick={() =>
-              setPage('dashboard')
-            }
+            className={page === 'dashboard' ? 'navActive' : ''}
+            onClick={() => setPage('dashboard')}
           >
             <LayoutDashboard size={18} />
-            <span>Dashboard</span>
+            Dashboard
           </button>
 
           <button
-            className={
-              page === 'transactions'
-                ? 'nav-item active'
-                : 'nav-item'
-            }
-            onClick={() =>
-              setPage('transactions')
-            }
+            className={page === 'transactions' ? 'navActive' : ''}
+            onClick={() => setPage('transactions')}
           >
-            <TableProperties size={18} />
-            <span>Transaction Data</span>
+            <Table2 size={18} />
+            Transaction Data
           </button>
 
           <button
-            className={
-              page === 'settings'
-                ? 'nav-item active'
-                : 'nav-item'
-            }
-            onClick={() =>
-              setPage('settings')
-            }
+            className={page === 'settings' ? 'navActive' : ''}
+            onClick={() => setPage('settings')}
           >
             <Settings size={18} />
-            <span>Settings</span>
+            Settings
           </button>
-
         </nav>
 
-        <div className="sidebar-bottom">
-          <button
-            className="logout-button"
-            onClick={logout}
-          >
+        <div className="sidebarBottom">
+          <button onClick={handleLogout}>
             <LogOut size={18} />
             Logout
           </button>
         </div>
       </aside>
 
-      <section className="main-content">
-
-        <header className="top-header">
+      <main className="mainContent">
+        <header className="topHeader">
           <div>
-            <h1>Snowball Redemption Tracker</h1>
-
+            <h1>{title}</h1>
             <p>
-              Analyse transactions and monitor
-              redemption activity
+              {page === 'dashboard' &&
+                'Analyse transactions and monitor redemption activity'}
+              {page === 'transactions' &&
+                'Detailed transaction-level data and classifications'}
+              {page === 'settings' &&
+                'Manage Relationship Managers and administrator access'}
             </p>
           </div>
 
-          <div className="header-user">
-            <span>
-              {session.user?.email}
-            </span>
+          <div className="headerActions">
+            <button
+              className="iconButton"
+              onClick={() => {
+                loadData()
+                loadRms()
+              }}
+              title="Refresh"
+            >
+              <RefreshCw size={18} />
+            </button>
 
-            <div className="avatar">
-              {String(
-                session.user?.email || 'S'
-              )
-                .charAt(0)
-                .toUpperCase()}
+            <button className="logoutTop" onClick={handleLogout}>
+              <LogOut size={16} />
+              Logout
+            </button>
+
+            <div
+              className="userBadge"
+              title={session.user.email}
+            >
+              {session.user.email?.charAt(0).toUpperCase()}
             </div>
           </div>
         </header>
 
-        {error && (
-          <div className="error global-message">
-            {error}
-          </div>
-        )}
+        {error && <div className="error">{error}</div>}
+        {message && <div className="message">{message}</div>}
 
-        {message && (
-          <div className="message global-message">
-            {message}
-          </div>
-        )}
-
-        <section className="filter-bar">
-
-          <div className="period-buttons">
-            {[
-              'WTD',
-              'MTD',
-              'QTD',
-              'YTD'
-            ].map((item) => (
-              <button
-                key={item}
-                className={
-                  period === item &&
-                  !from &&
-                  !to
-                    ? 'active'
-                    : ''
-                }
-                onClick={() => {
-                  setPeriod(item)
-                  setFrom('')
-                  setTo('')
-                }}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-
-          <select
-            value={rmFilter}
-            onChange={(event) =>
-              setRmFilter(
-                event.target.value
-              )
-            }
-          >
-            {rmNames.map((item) => (
-              <option
-                key={item}
-                value={item}
-              >
-                {item === 'All'
-                  ? 'All RMs'
-                  : item}
-              </option>
-            ))}
-          </select>
-
-          <input
-            type="date"
-            value={from}
-            onChange={(event) =>
-              setFrom(event.target.value)
-            }
-          />
-
-          <input
-            type="date"
-            value={to}
-            onChange={(event) =>
-              setTo(event.target.value)
-            }
-          />
-
-          <button
-            className="refresh-button"
-            onClick={loadAllData}
-            title="Refresh data"
-          >
-            <RefreshCw size={17} />
-          </button>
-
-        </section>
-
-        {page === 'dashboard' && (
-          <>
-
-            <section className="metric-grid">
-
-              <article className="metric-card redemption-card">
-                <span>Redemption</span>
-                <strong>
-                  {money(totals.Redemption)}
-                </strong>
-              </article>
-
-              <article className="metric-card swp-card">
-                <span>SWP</span>
-                <strong>
-                  {money(totals.SWP)}
-                </strong>
-              </article>
-
-              <article className="metric-card switch-card">
-                <span>Switch</span>
-                <strong>
-                  {money(totals.Switch)}
-                </strong>
-              </article>
-
-              <article className="metric-card stp-card">
-                <span>STP</span>
-                <strong>
-                  {money(totals.STP)}
-                </strong>
-              </article>
-
-              <article className="metric-card investor-card">
-                <span>Investors</span>
-                <strong>
-                  {numberFormat(
-                    totals.Investors
-                  )}
-                </strong>
-              </article>
-
-              <article className="metric-card transaction-card">
-                <span>Transactions</span>
-                <strong>
-                  {numberFormat(
-                    totals.Transactions
-                  )}
-                </strong>
-              </article>
-
-            </section>
-
-            <section className="dashboard-grid">
-
-              <article className="chart-card classification-card">
-                <h3>
-                  Amount by Classification
-                </h3>
-
-                <div className="classification-content">
-
-                  <div className="donut-wrap">
-                    <div className="donut">
-                      <div className="donut-center">
-                        <strong>
-                          {numberFormat(
-                            totals.Transactions
-                          )}
-                        </strong>
-
-                        <span>
-                          Transactions
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="legend">
-                    {classificationData.map(
-                      (item) => (
-                        <div
-                          className="legend-row"
-                          key={item.label}
-                        >
-                          <div className="legend-name">
-                            <span
-                              className={`dot ${item.className}`}
-                            />
-
-                            {item.label}
-                          </div>
-
-                          <strong>
-                            {money(item.value)}
-                          </strong>
-                        </div>
-                      )
-                    )}
-                  </div>
-
-                </div>
-              </article>
-
-              <article className="chart-card monthly-card">
-                <h3>
-                  Monthly Trend
-                </h3>
-
-                <div className="trend-chart">
-                  {monthlyData.length === 0 ? (
-                    <div className="empty-chart">
-                      No transaction data available
-                    </div>
-                  ) : (
-                    monthlyData.map(
-                      (item) => {
-                        const total =
-                          item.Redemption +
-                          item.SWP +
-                          item.Switch +
-                          item.STP
-
-                        const max =
-                          Math.max(
-                            ...monthlyData.map(
-                              (month) =>
-                                month.Redemption +
-                                month.SWP +
-                                month.Switch +
-                                month.STP
-                            ),
-                            1
-                          )
-
-                        return (
-                          <div
-                            className="trend-column"
-                            key={item.month}
-                          >
-                            <div className="trend-bars">
-                              <div
-                                className="trend-bar redemption"
-                                style={{
-                                  height: `${(
-                                    item.Redemption /
-                                    max
-                                  ) * 100}%`
-                                }}
-                              />
-
-                              <div
-                                className="trend-bar swp"
-                                style={{
-                                  height: `${(
-                                    item.SWP /
-                                    max
-                                  ) * 100}%`
-                                }}
-                              />
-
-                              <div
-                                className="trend-bar switch"
-                                style={{
-                                  height: `${(
-                                    item.Switch /
-                                    max
-                                  ) * 100}%`
-                                }}
-                              />
-
-                              <div
-                                className="trend-bar stp"
-                                style={{
-                                  height: `${(
-                                    item.STP /
-                                    max
-                                  ) * 100}%`
-                                }}
-                              />
-                            </div>
-
-                            <span>
-                              {item.month.slice(5)}
-                            </span>
-                          </div>
-                        )
-                      }
-                    )
-                  )}
-                </div>
-              </article>
-
-              <article className="chart-card rm-card">
-                <h3>
-                  Transactions by RM
-                </h3>
-
-                <div className="horizontal-chart">
-                  {rmChartData.length === 0 ? (
-                    <div className="empty-chart">
-                      No RM data available
-                    </div>
-                  ) : (
-                    rmChartData.map(
-                      (item) => (
-                        <div
-                          className="rm-bar-row"
-                          key={item.name}
-                        >
-                          <span className="rm-chart-name">
-                            {item.name}
-                          </span>
-
-                          <div className="rm-bar-track">
-                            <div
-                              className="rm-bar-fill"
-                              style={{
-                                width: `${(
-                                  item.value /
-                                  maxRMValue
-                                ) * 100}%`
-                              }}
-                            />
-                          </div>
-
-                          <strong>
-                            {money(item.value)}
-                          </strong>
-                        </div>
-                      )
-                    )
-                  )}
-                </div>
-              </article>
-
-              <article className="chart-card analysis-card">
-                <h3>
-                  Classification Analysis
-                </h3>
-
-                <div className="classification-bars">
-                  {classificationData.map(
-                    (item) => (
-                      <div
-                        className="analysis-row"
-                        key={item.label}
-                      >
-                        <div className="analysis-label">
-                          <span
-                            className={`dot ${item.className}`}
-                          />
-
-                          {item.label}
-                        </div>
-
-                        <div className="analysis-track">
-                          <div
-                            className={`analysis-fill ${item.className}`}
-                            style={{
-                              width: `${(
-                                item.value /
-                                maxClassification
-                              ) * 100}%`
-                            }}
-                          />
-                        </div>
-
-                        <strong>
-                          {money(item.value)}
-                        </strong>
-                      </div>
-                    )
-                  )}
-                </div>
-              </article>
-
-            </section>
-
-            <section className="recent-section">
-              <div className="section-heading">
-                <div>
-                  <h2>
-                    Recent Transactions
-                  </h2>
-
-                  <p>
-                    Latest classified transaction activity
-                  </p>
-                </div>
-
+        {page !== 'settings' && (
+          <section className="filterBar">
+            <div className="periodButtons">
+              {['WTD', 'MTD', 'QTD', 'YTD'].map(p => (
                 <button
-                  onClick={() =>
-                    setPage('transactions')
+                  key={p}
+                  className={
+                    period === p && !from && !to
+                      ? 'activePeriod'
+                      : ''
                   }
+                  onClick={() => {
+                    setPeriod(p)
+                    setFrom('')
+                    setTo('')
+                  }}
                 >
-                  View All Transactions
-                  <ChevronRight size={16} />
+                  {p}
                 </button>
-              </div>
+              ))}
+            </div>
 
-              <div className="recent-table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>RM</th>
-                      <th>Investor</th>
-                      <th>Scheme</th>
-                      <th>Amount</th>
-                      <th>Source</th>
-                      <th>Classification</th>
-                    </tr>
-                  </thead>
+            <select
+              value={rm}
+              onChange={e => setRm(e.target.value)}
+            >
+              {activeRmNames.map(x => (
+                <option key={x} value={x}>{x}</option>
+              ))}
+            </select>
 
-                  <tbody>
-                    {filteredRows
-                      .slice(0, 8)
-                      .map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            {formatDate(
-                              row.transaction_date
-                            )}
-                          </td>
+            <input
+              type="date"
+              value={from}
+              onChange={e => setFrom(e.target.value)}
+            />
 
-                          <td>
-                            {row.rm_name || '-'}
-                          </td>
+            <input
+              type="date"
+              value={to}
+              onChange={e => setTo(e.target.value)}
+            />
 
-                          <td>
-                            {row.investor_name || '-'}
-                          </td>
-
-                          <td>
-                            {row.scheme || '-'}
-                          </td>
-
-                          <td className="amount-cell">
-                            {money(row.amount)}
-                          </td>
-
-                          <td>
-                            {row.classified_transaction_type || '-'}
-                          </td>
-
-                          <td>
-                            <span
-                              className={`classification-pill ${String(
-                                row.classified_transaction_type || ''
-                              ).toLowerCase()}`}
-                            >
-                              {row.classified_transaction_type || '-'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-          </>
-        )}
-
-        {page === 'transactions' && (
-          <section className="transaction-page">
-
-            <div className="page-heading">
-              <div>
-                <h2>
-                  Transaction Data
-                </h2>
-
-                <p>
-                  Upload, review and export transaction data
-                </p>
-              </div>
-
-              <div className="transaction-actions">
-
-                <button className="upload-button">
+            {page === 'transactions' && (
+              <>
+                <button className="uploadButton">
                   <Upload size={17} />
-
                   <label>
-                    {uploading
-                      ? 'Uploading...'
-                      : 'Upload Excel'}
-
+                    {uploading ? 'Uploading...' : 'Upload Excel'}
                     <input
                       type="file"
                       accept=".xlsx,.xls,.csv"
@@ -1663,215 +981,369 @@ function App() {
                 </button>
 
                 <button
+                  className="secondaryButton"
                   onClick={exportExcel}
                 >
-                  <Download size={17} />
+                  <Download size={16} />
                   Excel
                 </button>
 
                 <button
+                  className="secondaryButton"
                   onClick={exportPDF}
                 >
-                  <FileText size={17} />
+                  <FileText size={16} />
                   PDF
                 </button>
+              </>
+            )}
+          </section>
+        )}
 
+        {page === 'dashboard' && (
+          <>
+            <section className="kpiGrid">
+              {[
+                ['Redemption', totals.Redemption, 'redemption'],
+                ['SWP', totals.SWP, 'swp'],
+                ['Switch', totals.Switch, 'switch'],
+                ['STP', totals.STP, 'stp'],
+                ['Investors', totals.Investors, 'investors'],
+                ['Transactions', totals.Transactions, 'transactions']
+              ].map(([name, value, tone]) => (
+                <article className={`kpiCard ${tone}`} key={name}>
+                  <span>{name}</span>
+                  <strong>
+                    {['Investors', 'Transactions'].includes(name)
+                      ? Number(value).toLocaleString('en-IN')
+                      : money(value)}
+                  </strong>
+                </article>
+              ))}
+            </section>
+
+            <section className="dashboardGrid">
+              <article className="chartCard classificationCard">
+                <h3>Amount by Classification</h3>
+                <div className="donutLayout">
+                  <div className="donut" style={donutStyle}>
+                    <div className="donutHole">
+                      <strong>{totals.Transactions.toLocaleString('en-IN')}</strong>
+                      <span>Transactions</span>
+                    </div>
+                  </div>
+
+                  <div className="classificationLegend">
+                    {classificationChart.map(item => (
+                      <div className="legendRow" key={item.name}>
+                        <span
+                          className="legendDot"
+                          style={{ background: item.color }}
+                        />
+                        <span>{item.name}</span>
+                        <strong>{compactMoney(item.amount)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </article>
+
+              <article className="chartCard">
+                <h3>Monthly Trend</h3>
+                <div className="trendChart">
+                  {monthlyTrend.length ? monthlyTrend.map(item => {
+                    const max = Math.max(
+                      ...monthlyTrend.flatMap(x => [
+                        x.Redemption, x.SWP, x.Switch, x.STP
+                      ]),
+                      1
+                    )
+                    return (
+                      <div className="trendMonth" key={item.month}>
+                        <div className="trendBars">
+                          {[
+                            ['Redemption', 'trendRed'],
+                            ['SWP', 'trendSwp'],
+                            ['Switch', 'trendSwitch'],
+                            ['STP', 'trendStp']
+                          ].map(([key, cls]) => (
+                            <div
+                              key={key}
+                              className={`trendBar ${cls}`}
+                              title={`${key}: ${money(item[key])}`}
+                              style={{
+                                height: `${Math.max(4, (item[key] / max) * 100)}%`
+                              }}
+                            />
+                          ))}
+                        </div>
+                        <span>{item.month.slice(5)}</span>
+                      </div>
+                    )
+                  }) : (
+                    <div className="emptyChart">No data available</div>
+                  )}
+                </div>
+              </article>
+
+              <article className="chartCard rmChartCard">
+                <h3>Transactions by RM</h3>
+                <div className="rmBars">
+                  {chartData.map(item => (
+                    <div className="rmBarRow" key={item.name}>
+                      <span title={item.name}>{item.name}</span>
+                      <div className="rmBarTrack">
+                        <div
+                          className="rmBarFill"
+                          style={{
+                            width: `${Math.max(
+                              3,
+                              (item.amount / maxChartValue) * 100
+                            )}%`
+                          }}
+                        />
+                      </div>
+                      <strong>{compactMoney(item.amount)}</strong>
+                    </div>
+                  ))}
+                  {!chartData.length && (
+                    <div className="emptyChart">No data available</div>
+                  )}
+                </div>
+              </article>
+            </section>
+
+            <section className="recentCard">
+              <div className="sectionHeading">
+                <div>
+                  <h2>Recent Transactions</h2>
+                  <p>Latest analysed transactions</p>
+                </div>
+                <button
+                  className="viewAllButton"
+                  onClick={() => setPage('transactions')}
+                >
+                  View All Transactions
+                </button>
               </div>
-            </div>
 
-            <div className="table-card">
-
-              <div className="table-title">
-                Transactions (
-                {filteredRows.length})
-              </div>
-
-              <div className="full-table-wrap">
+              <div className="miniTableWrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Date</th>
                       <th>RM</th>
                       <th>Investor</th>
-                      <th>Folio</th>
                       <th>Scheme</th>
                       <th>Amount</th>
                       <th>Source</th>
                       <th>Classification</th>
                     </tr>
                   </thead>
-
                   <tbody>
-                    {filteredRows
-                      .slice(0, 1000)
-                      .map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            {formatDate(
-                              row.transaction_date
-                            )}
-                          </td>
-
-                          <td>
-                            {row.rm_name || '-'}
-                          </td>
-
-                          <td>
-                            {row.investor_name || '-'}
-                          </td>
-
-                          <td>
-                            {row.folio_no || '-'}
-                          </td>
-
-                          <td>
-                            {row.scheme || '-'}
-                          </td>
-
-                          <td className="amount-cell">
-                            {money(row.amount)}
-                          </td>
-
-                          <td>
-                            {row.classified_transaction_type || '-'}
-                          </td>
-
-                          <td>
-                            <span
-                              className={`classification-pill ${String(
-                                row.classified_transaction_type || ''
-                              ).toLowerCase()}`}
-                            >
-                              {row.classified_transaction_type || '-'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                    {filtered.slice(0, 10).map(x => (
+                      <tr key={x.id || `${x.investor_name}-${x.transaction_date}-${x.scheme}`}>
+                        <td>{x.transaction_date}</td>
+                        <td>{x.rm_name}</td>
+                        <td>{x.investor_name}</td>
+                        <td>{x.scheme}</td>
+                        <td>{money(x.amount)}</td>
+                        <td>{sourceLabel(x.original_transaction_type)}</td>
+                        <td>
+                          <span className={`classification ${String(x.display_classification).toLowerCase()}`}>
+                            {x.display_classification}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
+            </section>
+          </>
+        )}
+
+        {page === 'transactions' && (
+          <section className="dataCard">
+            <div className="sectionHeading">
+              <div>
+                <h2>Transaction Details</h2>
+                <p>{filtered.length} transactions found</p>
+              </div>
             </div>
 
+            <div className="tableScroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>RM</th>
+                    <th>Investor</th>
+                    <th>Folio</th>
+                    <th>Scheme</th>
+                    <th>Amount</th>
+                    <th>Source</th>
+                    <th>Classification</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedRows.map(x => (
+                    <tr key={x.id || `${x.investor_name}-${x.transaction_date}-${x.scheme}`}>
+                      <td>{x.transaction_date}</td>
+                      <td>{x.rm_name}</td>
+                      <td>{x.investor_name}</td>
+                      <td>{x.folio_no}</td>
+                      <td>{x.scheme}</td>
+                      <td>{money(x.amount)}</td>
+                      <td>{sourceLabel(x.original_transaction_type)}</td>
+                      <td>
+                        <span className={`classification ${String(x.display_classification).toLowerCase()}`}>
+                          {x.display_classification}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="pagination">
+              <button
+                disabled={currentPage === 1}
+                onClick={() => setCurrentPage(currentPage - 1)}
+              >
+                Previous
+              </button>
+              <span>Page {currentPage} of {totalPages}</span>
+              <button
+                disabled={currentPage === totalPages}
+                onClick={() => setCurrentPage(currentPage + 1)}
+              >
+                Next
+              </button>
+            </div>
           </section>
         )}
 
         {page === 'settings' && (
-          <section className="settings-page">
-
-            <div className="page-heading">
-              <div>
-                <h2>
-                  Settings
-                </h2>
-
-                <p>
-                  Add and manage Relationship Managers
-                </p>
-              </div>
+          <section className="settingsPage">
+            <div className="settingsTabs">
+              <button
+                className={settingsTab === 'current' ? 'tabActive' : ''}
+                onClick={() => setSettingsTab('current')}
+              >
+                <Users size={16} />
+                Current RMs
+              </button>
+              <button
+                className={settingsTab === 'admin' ? 'tabActive' : ''}
+                onClick={() => setSettingsTab('admin')}
+              >
+                <ShieldCheck size={16} />
+                Admin Settings
+              </button>
             </div>
 
-            <div className="settings-card">
+            {settingsTab === 'current' && (
+              <>
+                <article className="rmAddCard">
+                  <h2>Add New RM</h2>
+                  <p>Add an RM to the organisation. Existing RMs are never deleted; they can be marked inactive.</p>
 
-              <h3>
-                Manage RMs
-              </h3>
+                  <form onSubmit={addRm}>
+                    <input
+                      placeholder="Enter RM name"
+                      value={newRm}
+                      onChange={e => setNewRm(e.target.value)}
+                    />
+                    <button className="primaryButton">
+                      <UserPlus size={16} />
+                      Add RM
+                    </button>
+                  </form>
+                </article>
 
-              <p className="settings-note">
-                RMs are never deleted. When an RM leaves the organisation, mark the RM inactive. Historical transaction data remains unchanged.
-              </p>
-
-              <div className="add-rm-row">
-                <input
-                  value={newRM}
-                  placeholder="Enter RM name"
-                  onChange={(event) =>
-                    setNewRM(
-                      event.target.value
-                    )
-                  }
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === 'Enter'
-                    ) {
-                      addRM()
-                    }
-                  }}
-                />
-
-                <button
-                  className="add-rm-button"
-                  onClick={addRM}
-                >
-                  <Plus size={17} />
-                  Add RM
-                </button>
-              </div>
-
-              <div className="rm-list">
-
-                {rms.length === 0 ? (
-                  <div className="empty-rm">
-                    No RMs have been added yet.
+                <article className="rmListCard">
+                  <div className="sectionHeading">
+                    <div>
+                      <h2>Current RMs</h2>
+                      <p>
+                        {rmDirectory.filter(x => x.is_active !== false).length} active
+                        {' • '}
+                        {rmDirectory.length} total
+                      </p>
+                    </div>
                   </div>
-                ) : (
-                  rms.map((item) => (
-                    <div
-                      className="rm-row"
-                      key={item.id}
-                    >
-                      <div className="rm-details">
-                        <Users size={19} />
 
-                        <strong>
-                          {item.rm_name}
-                        </strong>
+                  <div className="rmList">
+                    {rmDirectory.map(item => (
+                      <div className="rmRow" key={item.id || item.name}>
+                        <div className="rmAvatar">
+                          {item.name?.charAt(0).toUpperCase()}
+                        </div>
 
-                        <span
-                          className={
-                            item.is_active === false
-                              ? 'status inactive'
-                              : 'status active'
-                          }
+                        <div className="rmName">
+                          <strong>{item.name}</strong>
+                          <span className={item.is_active === false ? 'statusInactive' : 'statusActive'}>
+                            {item.is_active === false ? 'Inactive' : 'Active'}
+                          </span>
+                        </div>
+
+                        <button
+                          className={item.is_active === false ? 'activateButton' : 'deactivateButton'}
+                          onClick={() => toggleRmStatus(item)}
                         >
                           {item.is_active === false
-                            ? 'Inactive'
-                            : 'Active'}
+                            ? <><UserPlus size={14} /> Activate</>
+                            : <><UserMinus size={14} /> Mark Inactive</>}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </>
+            )}
+
+            {settingsTab === 'admin' && (
+              <article className="rmListCard">
+                <div className="sectionHeading">
+                  <div>
+                    <h2>Admin Settings</h2>
+                    <p>Select which active Relationship Managers should have administrator access.</p>
+                  </div>
+                </div>
+
+                <div className="rmList">
+                  {rmDirectory.map(item => (
+                    <div className="rmRow" key={item.id || item.name}>
+                      <div className="rmAvatar">
+                        {item.name?.charAt(0).toUpperCase()}
+                      </div>
+
+                      <div className="rmName">
+                        <strong>{item.name}</strong>
+                        <span className={item.is_admin ? 'statusAdmin' : 'statusInactive'}>
+                          {item.is_admin ? 'Admin' : 'Standard access'}
                         </span>
                       </div>
 
                       <button
-                        className={
-                          item.is_active === false
-                            ? 'activate-button'
-                            : 'inactive-button'
-                        }
-                        onClick={() =>
-                          toggleRM(item)
-                        }
+                        className={item.is_admin ? 'deactivateButton' : 'activateButton'}
+                        onClick={() => toggleAdmin(item)}
                       >
-                        {item.is_active === false ? (
-                          <>
-                            <UserCheck size={16} />
-                            Activate
-                          </>
-                        ) : (
-                          <>
-                            <UserX size={16} />
-                            Mark Inactive
-                          </>
-                        )}
+                        {item.is_admin
+                          ? <><CheckCircle2 size={14} /> Remove Admin</>
+                          : <><ShieldCheck size={14} /> Make Admin</>}
                       </button>
                     </div>
-                  ))
-                )}
-
-              </div>
-            </div>
+                  ))}
+                </div>
+              </article>
+            )}
           </section>
         )}
-
-      </section>
-    </main>
+      </main>
+    </div>
   )
 }
 
