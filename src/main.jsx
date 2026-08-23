@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 
 import './styles.css'
-import snowballLogo from './Screenshot 2026-08-18 161429.png'
+import logo from './logo.png'
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
