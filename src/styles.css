@@ -1,25 +1,24 @@
-:root {
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-
-  color: #26364b;
-  background: #f3f6fa;
-}
-
 * {
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
-  background: #f3f6fa;
-  color: #26364b;
+  min-height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family:
+    Inter,
+    "Segoe UI",
+    Arial,
+    sans-serif;
+
+  background: #eef2f7;
+  color: #1d2c3d;
 }
 
 button,
@@ -28,41 +27,61 @@ select {
   font: inherit;
 }
 
-/* ================= LOGIN ================= */
+/* ==============================
+   LOGIN
+================================ */
 
 .loginPage {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 30px;
+
+  padding: 24px;
+
   background:
     radial-gradient(
       circle at top right,
-      rgba(190, 145, 43, 0.12),
+      rgba(183, 139, 49, 0.22),
       transparent 30%
     ),
-    #172b45;
+    linear-gradient(
+      135deg,
+      #10243b,
+      #1b3652
+    );
 }
 
 .loginCard {
-  width: min(100%, 510px);
-  padding: 52px;
-  border-radius: 24px;
+  width: min(100%, 430px);
+
+  padding: 42px;
+
+  border-radius: 22px;
+
   background: #ffffff;
+
   box-shadow:
-    0 25px 70px rgba(0, 0, 0, 0.25);
+    0 30px 80px rgba(0, 0, 0, 0.25);
 }
 
-.loginCard h1 {
-  margin: 0 0 12px;
-  font-size: 34px;
-  line-height: 1.2;
-  color: #20334c;
+.loginLogo {
+  width: 170px;
+  max-height: 80px;
+  object-fit: contain;
+
+  margin-bottom: 28px;
 }
 
-.loginCard p {
-  margin: 0 0 30px;
-  color: #68788c;
+.loginHeading h1 {
+  margin: 0 0 8px;
+
+  font-size: 28px;
+}
+
+.loginHeading p {
+  margin: 0 0 28px;
+
+  color: #718096;
 }
 
 .loginCard form {
@@ -70,624 +89,963 @@ select {
   gap: 14px;
 }
 
-.loginCard input {
+.loginCard input,
+.addRMForm input {
   width: 100%;
-  padding: 17px;
-  border: 1px solid #d8e0e9;
-  border-radius: 12px;
+
+  border: 1px solid #d8e0e8;
+  border-radius: 10px;
+
+  padding: 13px 14px;
+
   outline: none;
+
+  background: #fff;
 }
 
-.loginCard input:focus {
-  border-color: #b68a32;
+.loginCard input:focus,
+.addRMForm input:focus {
+  border-color: #b78b31;
+
   box-shadow:
     0 0 0 3px
-    rgba(182, 138, 50, 0.12);
+    rgba(183, 139, 49, 0.12);
 }
 
-.loginButton {
-  display: flex;
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  align-items: center;
-  gap: 9px;
-  padding: 16px;
-  border: 0;
-  border-radius: 12px;
-  color: white;
-  background: #1d344f;
-  cursor: pointer;
-  font-weight: 700;
-}
+  gap: 8px;
 
-.loginButton:hover {
-  background: #b68a32;
-}
-
-.forgotButton,
-.backButton {
-  margin-top: 22px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #a67824;
-  cursor: pointer;
-}
-
-.backButton {
-  margin: 0 0 22px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.authError,
-.authMessage {
-  margin-top: 18px;
-  padding: 12px 14px;
+  border: none;
   border-radius: 10px;
+
+  padding: 13px 18px;
+
+  background: #b78b31;
+  color: #fff;
+
+  font-weight: 700;
+
+  cursor: pointer;
+}
+
+.primaryButton:hover {
+  background: #9f7628;
+}
+
+.textButton {
+  border: none;
+  background: transparent;
+
+  color: #64748b;
+
+  cursor: pointer;
+}
+
+.textButton:hover {
+  color: #b78b31;
+}
+
+.formError,
+.errorBanner {
+  padding: 12px 14px;
+
+  border-radius: 8px;
+
+  background: #fff0f0;
+  color: #b42318;
+
+  font-size: 13px;
+}
+
+.successMessage,
+.successBanner {
+  padding: 12px 16px;
+
+  border-radius: 10px;
+
+  background: #ecfdf3;
+  color: #087443;
+
   font-size: 14px;
 }
 
-.authError {
-  color: #9e3030;
-  background: #fff0f0;
+.resetText {
+  margin: 0;
+  color: #64748b;
 }
 
-.authMessage {
-  color: #27734c;
-  background: #effaf3;
-}
-
-/* ================= APP ================= */
+/* ==============================
+   APPLICATION LAYOUT
+================================ */
 
 .appShell {
   min-height: 100vh;
+
   display: flex;
-  background: #f3f6fa;
+
+  background: #eef2f7;
 }
 
 .sidebar {
-  width: 255px;
+  width: 245px;
+  min-width: 245px;
+
   min-height: 100vh;
+
   display: flex;
   flex-direction: column;
+
   background:
-    radial-gradient(
-      circle at left bottom,
-      rgba(182, 138, 50, 0.12),
-      transparent 30%
-    ),
-    #172b45;
-  color: white;
+    linear-gradient(
+      180deg,
+      #11263d,
+      #0d2034
+    );
+
+  color: #fff;
 }
 
 .brand {
-  height: 105px;
+  height: 118px;
+
   display: flex;
   align-items: center;
-  padding: 22px 25px;
-  border-bottom:
-    1px solid rgba(255, 255, 255, 0.08);
+
+  padding: 24px;
 }
 
 .brand img {
-  width: 165px;
-  max-height: 68px;
+  width: 155px;
+  max-height: 72px;
+
   object-fit: contain;
-  object-position: left center;
+
+  background: #fff;
+
+  padding: 7px;
+
+  border-radius: 5px;
 }
 
-.sidebar nav {
-  padding: 18px 12px;
+.sideNav {
   display: grid;
   gap: 8px;
+
+  padding: 10px 12px;
 }
 
 .navItem {
   width: 100%;
+
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: 14px;
+
+  border: none;
+  border-radius: 10px;
+
   padding: 15px 16px;
-  border: 0;
-  border-radius: 11px;
+
   background: transparent;
-  color: #c7d1dc;
-  cursor: pointer;
+  color: #d4dce6;
+
   text-align: left;
   font-weight: 600;
+
+  cursor: pointer;
 }
 
 .navItem:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: white;
+  background: rgba(255, 255, 255, 0.07);
 }
 
-.activeNav {
-  background: #b68a32;
-  color: white;
+.navItem.active {
+  background:
+    linear-gradient(
+      90deg,
+      #c39435,
+      #aa7a28
+    );
+
+  color: #fff;
+
   box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.16);
+    0 8px 25px
+    rgba(0, 0, 0, 0.2);
 }
 
 .sidebarFooter {
   margin-top: auto;
-  padding: 22px;
-  color: #8393a5;
-  font-size: 11px;
+
+  padding: 20px 24px;
+
   border-top:
-    1px solid rgba(255, 255, 255, 0.08);
+    1px solid
+    rgba(255, 255, 255, 0.08);
+
+  color: #8292a4;
+
+  font-size: 11px;
 }
 
-.mainContent {
+.mainArea {
   flex: 1;
+
   min-width: 0;
-  padding: 0 32px 32px;
+
+  padding: 24px 34px 40px;
 }
 
-.topBar {
-  height: 74px;
+.topHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
+
+  margin-bottom: 22px;
 }
 
-.logoutButton {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 16px;
-  border: 1px solid #d7e0e8;
-  border-radius: 10px;
-  background: white;
-  color: #26364b;
-  cursor: pointer;
+.topHeader h1 {
+  margin: 0 0 6px;
+
+  font-size: 25px;
+  letter-spacing: -0.4px;
 }
 
-.pageHeader {
-  margin-bottom: 20px;
-}
-
-.pageHeader h1 {
+.topHeader p {
   margin: 0;
-  font-size: 27px;
-  color: #22364f;
-}
 
-.pageHeader p {
-  margin: 7px 0 0;
-  color: #718095;
+  color: #738196;
   font-size: 14px;
 }
 
-/* ================= FILTERS ================= */
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
+.logoutButton,
+.actionButton,
+.iconButton {
+  display: inline-flex;
   align-items: center;
-  gap: 9px;
+  justify-content: center;
+  gap: 7px;
+
+  border: 1px solid #d8e0e8;
+  border-radius: 9px;
+
+  padding: 10px 14px;
+
+  background: #fff;
+  color: #334155;
+
+  cursor: pointer;
+}
+
+.logoutButton:hover,
+.actionButton:hover,
+.iconButton:hover {
+  border-color: #b78b31;
+}
+
+.iconButton {
+  width: 43px;
+  padding: 0;
+}
+
+.errorBanner,
+.successBanner {
+  margin-bottom: 14px;
+}
+
+/* ==============================
+   CONTROL PANEL
+================================ */
+
+.controlPanel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+
   padding: 14px;
+
   margin-bottom: 22px;
-  border: 1px solid #e0e7ef;
-  border-radius: 17px;
-  background: white;
+
+  background: #fff;
+
+  border:
+    1px solid #dde4eb;
+
+  border-radius: 15px;
+
   box-shadow:
-    0 8px 25px rgba(27, 48, 75, 0.05);
+    0 8px 22px
+    rgba(28, 47, 70, 0.05);
 }
 
 .periodButtons {
   display: flex;
-  border-radius: 11px;
-  overflow: hidden;
+  gap: 4px;
 }
 
-.periodButtons button,
-.filters > button,
-.filters select,
-.filters input {
-  height: 42px;
-  padding: 0 14px;
-  border: 1px solid #d9e2eb;
-  background: white;
-  color: #33455b;
-}
+.periodButton {
+  border: none;
 
-.periodButtons button {
-  border-radius: 0;
-  border-right: 0;
-}
+  padding: 10px 13px;
 
-.periodButtons button:last-child {
-  border-right: 1px solid #d9e2eb;
-}
+  border-radius: 8px;
 
-.periodButtons .active {
-  background: #20364f;
-  color: white;
-}
+  background: transparent;
 
-.filters select {
-  min-width: 145px;
-  border-radius: 10px;
-}
+  color: #65758a;
 
-.filters input {
-  border-radius: 10px;
-}
+  font-weight: 700;
 
-.filters > button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  border-radius: 10px;
   cursor: pointer;
+}
+
+.periodButton:hover {
+  background: #f2f4f7;
+}
+
+.periodButton.selected {
+  background: #1d3957;
+  color: #fff;
+}
+
+.controlPanel select,
+.controlPanel input[type="date"] {
+  height: 42px;
+
+  border:
+    1px solid #d9e1e9;
+
+  border-radius: 9px;
+
+  padding: 0 12px;
+
+  background: #fff;
+
+  color: #334155;
 }
 
 .uploadButton {
-  height: 42px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
+
+  height: 42px;
+
   padding: 0 15px;
-  border-radius: 10px;
-  background: #20364f;
-  color: white;
+
+  border-radius: 9px;
+
+  background: #1b3652;
+  color: #fff;
+
+  font-weight: 700;
+
   cursor: pointer;
-  font-weight: 600;
+}
+
+.uploadButton:hover {
+  background: #112a44;
+}
+
+.uploadButton.disabled {
+  opacity: 0.7;
 }
 
 .uploadButton input {
   display: none;
 }
 
-.refreshButton {
-  padding: 0 12px !important;
-}
+/* ==============================
+   METRICS
+================================ */
 
-/* ================= SUMMARY ================= */
-
-.summaryCards {
+.metricGrid {
   display: grid;
+
   grid-template-columns:
     repeat(6, minmax(0, 1fr));
+
   gap: 14px;
+
   margin-bottom: 22px;
 }
 
-.summaryCard {
-  position: relative;
+.metricCard {
   min-height: 110px;
-  padding: 22px;
-  border: 1px solid #e0e7ef;
-  border-radius: 18px;
-  background: white;
-  overflow: hidden;
+
+  padding: 20px;
+
+  border-radius: 16px;
+
+  background: #fff;
+
+  border:
+    1px solid #dde4eb;
+
+  border-left:
+    4px solid #b78b31;
+
   box-shadow:
-    0 8px 25px rgba(27, 48, 75, 0.05);
+    0 8px 20px
+    rgba(28, 47, 70, 0.05);
 }
 
-.summaryCard::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 4px;
-  height: 100%;
-  background: #b68a32;
-}
-
-.summaryCard.swp::before {
-  background: #58a48d;
-}
-
-.summaryCard.switch::before {
-  background: #5b86c8;
-}
-
-.summaryCard.stp::before {
-  background: #8b70c9;
-}
-
-.summaryCard span {
+.metricCard span {
   display: block;
-  margin-bottom: 13px;
-  color: #708096;
+
+  margin-bottom: 12px;
+
+  color: #708095;
+
   font-size: 13px;
+  font-weight: 600;
 }
 
-.summaryCard strong {
-  font-size: 23px;
-  color: #26384e;
+.metricCard strong {
+  display: block;
+
+  font-size: 22px;
+
+  letter-spacing: -0.3px;
+
+  white-space: nowrap;
 }
 
-/* ================= DASHBOARD ================= */
+.metricCard.redemption {
+  border-left-color: #d85b61;
+}
+
+.metricCard.swp {
+  border-left-color: #54a77e;
+}
+
+.metricCard.switch {
+  border-left-color: #668bc7;
+}
+
+.metricCard.stp {
+  border-left-color: #9a75c9;
+}
+
+.metricCard.investors {
+  border-left-color: #e39a4d;
+}
+
+.metricCard.transactions {
+  border-left-color: #4f8dcc;
+}
+
+/* ==============================
+   DASHBOARD GRID
+================================ */
 
 .dashboardGrid {
   display: grid;
+
   grid-template-columns:
-    1.1fr 1.3fr;
-  gap: 20px;
+    1.05fr 1.45fr 1.25fr;
+
+  gap: 18px;
 }
 
-.chartCard {
-  min-height: 300px;
-  padding: 22px;
-  border: 1px solid #e0e7ef;
-  border-radius: 18px;
-  background: white;
+.panel {
+  min-width: 0;
+
+  padding: 20px;
+
+  background: #fff;
+
+  border:
+    1px solid #dde4eb;
+
+  border-radius: 16px;
+
   box-shadow:
-    0 8px 25px rgba(27, 48, 75, 0.05);
+    0 8px 20px
+    rgba(28, 47, 70, 0.05);
 }
 
-.chartCard h2,
-.dataCard h2,
-.rmAddCard h2,
-.rmListCard h2 {
-  margin: 0 0 22px;
-  font-size: 17px;
-  color: #26384e;
+.panel h2 {
+  margin: 0 0 18px;
+
+  font-size: 16px;
 }
 
-.classificationAnalysis {
-  grid-column: 1 / -1;
-  min-height: auto;
+.classificationPanel,
+.monthlyPanel,
+.analysisPanel {
+  min-height: 290px;
 }
 
 .classificationContent {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 35px;
-  min-height: 210px;
+  gap: 22px;
 }
 
 .donut {
-  position: relative;
-  width: 155px;
-  height: 155px;
+  width: 130px;
+  height: 130px;
+
+  min-width: 130px;
+
+  display: grid;
+  place-items: center;
+
   border-radius: 50%;
 }
 
 .donutHole {
-  position: absolute;
-  inset: 30px;
+  width: 82px;
+  height: 82px;
+
+  display: grid;
+  place-items: center;
+
   border-radius: 50%;
-  background: white;
+
+  background: #fff;
+
+  color: #334155;
+
+  font-weight: 800;
 }
 
 .legend {
-  min-width: 190px;
   display: grid;
-  gap: 13px;
+  gap: 12px;
+
+  width: 100%;
 }
 
-.legendRow {
+.legendItem {
   display: grid;
+
   grid-template-columns:
-    12px 1fr auto;
-  gap: 9px;
+    10px 1fr auto;
+
   align-items: center;
-  font-size: 13px;
+  gap: 7px;
+
+  font-size: 12px;
 }
 
-.legendRow b {
+.legendItem strong {
   font-size: 12px;
 }
 
 .legendDot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
+
   border-radius: 50%;
 }
 
-.legendDot.redemption {
-  background: #d84b55;
+.legendDot.redemption,
+.progressFill.redemption,
+.trendBar.redemption,
+.chartLegend .redemption {
+  background: #d85b61;
 }
 
-.legendDot.swp {
-  background: #58a48d;
+.legendDot.swp,
+.progressFill.swp,
+.trendBar.swp,
+.chartLegend .swp {
+  background: #54a77e;
 }
 
-.legendDot.switch {
-  background: #5b86c8;
+.legendDot.switch,
+.progressFill.switch,
+.trendBar.switch,
+.chartLegend .switch {
+  background: #668bc7;
 }
 
-.legendDot.stp {
-  background: #8b70c9;
+.legendDot.stp,
+.progressFill.stp,
+.trendBar.stp,
+.chartLegend .stp {
+  background: #9a75c9;
 }
 
-.rmBars {
-  display: grid;
-  gap: 17px;
+/* ==============================
+   MONTHLY CHART
+================================ */
+
+.trendChart {
+  height: 190px;
+
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 9px;
+
+  padding: 10px 0 0;
+
+  border-bottom:
+    1px solid #e5eaf0;
 }
 
-.rmBarRow {
-  display: grid;
-  grid-template-columns:
-    90px 1fr 105px;
-  gap: 10px;
+.trendColumn {
+  flex: 1;
+
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  font-size: 12px;
 }
 
-.rmBarRow > span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.trendBars {
+  height: 145px;
+
+  width: 100%;
+
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
 }
 
-.barTrack,
-.analysisTrack {
-  height: 9px;
-  overflow: hidden;
-  border-radius: 10px;
-  background: #edf1f5;
+.trendBar {
+  width: 20%;
+  min-height: 2px;
+
+  border-radius:
+    4px 4px 0 0;
 }
 
-.barFill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    #d1a44c,
-    #a87826
-  );
+.trendColumn small {
+  margin-top: 8px;
+
+  color: #7a8798;
+
+  font-size: 10px;
+}
+
+.chartLegend {
+  display: flex;
+  justify-content: center;
+  gap: 13px;
+
+  margin-top: 13px;
+
+  font-size: 10px;
+  color: #66768a;
+}
+
+.chartLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chartLegend i {
+  width: 7px;
+  height: 7px;
+
+  display: inline-block;
+
+  border-radius: 50%;
+}
+
+/* ==============================
+   CLASSIFICATION ANALYSIS
+================================ */
+
+.analysisBars {
+  display: grid;
+  gap: 20px;
+
+  padding-top: 15px;
 }
 
 .analysisRow {
   display: grid;
+
   grid-template-columns:
-    110px 1fr 125px;
+    92px 1fr auto;
+
   align-items: center;
-  gap: 15px;
-  margin: 16px 0;
-  font-size: 13px;
+  gap: 10px;
 }
 
-.analysisFill {
+.analysisLabel {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+
+  font-size: 12px;
+}
+
+.progressTrack {
+  height: 9px;
+
+  overflow: hidden;
+
+  border-radius: 999px;
+
+  background: #edf1f5;
+}
+
+.progressFill {
   height: 100%;
+
   border-radius: inherit;
 }
 
-.analysisFill.redemption {
-  background: #d84b55;
+.analysisRow strong {
+  font-size: 11px;
 }
 
-.analysisFill.swp {
-  background: #58a48d;
+/* ==============================
+   RM PANEL
+================================ */
+
+.rmPanel {
+  grid-column: span 1;
 }
 
-.analysisFill.switch {
-  background: #5b86c8;
+.rmBars {
+  display: grid;
+  gap: 14px;
 }
 
-.analysisFill.stp {
-  background: #8b70c9;
-}
+.rmBarRow {
+  display: grid;
 
-.emptyChart {
-  color: #8996a8;
-  text-align: center;
-}
+  grid-template-columns:
+    80px 1fr 65px;
 
-/* ================= TRANSACTION TABLE ================= */
-
-.dataCard,
-.rmAddCard,
-.rmListCard {
-  padding: 22px;
-  border: 1px solid #e0e7ef;
-  border-radius: 18px;
-  background: white;
-  box-shadow:
-    0 8px 25px rgba(27, 48, 75, 0.05);
-}
-
-.tableTitle {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 10px;
+
+  font-size: 10px;
 }
 
-.tableTitle span {
-  color: #8996a8;
-  font-size: 13px;
+.rmBarRow > span {
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  color: #66768a;
 }
 
-.tableScroll {
+.rmTrack {
+  height: 9px;
+
+  overflow: hidden;
+
+  border-radius: 99px;
+
+  background: #edf1f5;
+}
+
+.rmFill {
+  height: 100%;
+
+  border-radius: inherit;
+
+  background:
+    linear-gradient(
+      90deg,
+      #c29439,
+      #a97726
+    );
+}
+
+.rmBarRow strong {
+  text-align: right;
+
+  font-size: 10px;
+}
+
+/* ==============================
+   RECENT TRANSACTIONS
+================================ */
+
+.recentPanel {
+  grid-column: span 2;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+
+  margin-bottom: 15px;
+}
+
+.panelHeader h2 {
+  margin: 0;
+}
+
+.panelHeader p {
+  margin: 5px 0 0;
+
+  color: #718096;
+
+  font-size: 12px;
+}
+
+.viewAllButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  border: none;
+
+  background: transparent;
+
+  color: #b17d29;
+
+  font-size: 12px;
+  font-weight: 700;
+
+  cursor: pointer;
+}
+
+.miniTableWrap,
+.fullTableWrap {
+  width: 100%;
   overflow-x: auto;
 }
 
 table {
   width: 100%;
+
   border-collapse: collapse;
-  font-size: 13px;
+
+  font-size: 12px;
 }
 
 th {
-  padding: 13px 11px;
-  background: #f4f7fa;
-  color: #64748a;
+  padding: 11px 10px;
+
   text-align: left;
+
+  background: #f5f7fa;
+
+  color: #66768a;
+
+  font-weight: 700;
+
   white-space: nowrap;
 }
 
 td {
-  padding: 13px 11px;
-  border-bottom: 1px solid #edf1f5;
-  color: #334155;
+  padding: 11px 10px;
+
+  border-bottom:
+    1px solid #edf0f4;
+
+  color: #3c4b5d;
+}
+
+tbody tr:hover {
+  background: #fafbfc;
 }
 
 .classificationBadge {
-  display: inline-block;
-  padding: 5px 9px;
-  border-radius: 7px;
-  font-size: 11px;
+  display: inline-flex;
+
+  padding: 4px 8px;
+
+  border-radius: 999px;
+
+  font-size: 10px;
   font-weight: 700;
 }
 
 .classificationBadge.redemption {
-  color: #b83d46;
-  background: #fff0f1;
+  background: #fdebed;
+  color: #c63f48;
 }
 
 .classificationBadge.swp {
-  color: #26765f;
-  background: #ebf8f2;
+  background: #e7f6ed;
+  color: #33895d;
 }
 
 .classificationBadge.switch {
-  color: #3c68a8;
-  background: #edf4ff;
+  background: #eaf0fb;
+  color: #4b70ae;
 }
 
 .classificationBadge.stp {
-  color: #7456af;
-  background: #f3effc;
+  background: #f0eafa;
+  color: #7953aa;
 }
 
-.emptyTable {
-  padding: 40px;
-  text-align: center;
-  color: #8996a8;
+/* ==============================
+   TRANSACTION PAGE
+================================ */
+
+.dataPanel,
+.rmManagePanel {
+  padding: 22px;
+
+  background: #fff;
+
+  border:
+    1px solid #dde4eb;
+
+  border-radius: 16px;
+
+  box-shadow:
+    0 8px 20px
+    rgba(28, 47, 70, 0.05);
 }
 
-/* ================= RM MANAGEMENT ================= */
+.dataPanel h2 {
+  margin: 0;
 
-.rmAddCard {
-  margin-bottom: 20px;
+  font-size: 20px;
 }
 
-.rmAddCard form {
+/* ==============================
+   MANAGE RMS
+================================ */
+
+.rmManagePanel {
+  display: grid;
+  gap: 24px;
+}
+
+.addRMBox {
   display: flex;
-  gap: 12px;
-}
-
-.rmAddCard input {
-  flex: 1;
-  height: 47px;
-  padding: 0 15px;
-  border: 1px solid #d9e2eb;
-  border-radius: 10px;
-}
-
-.primaryButton,
-.activateButton,
-.inactiveButton {
-  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 7px;
-  border: 0;
-  border-radius: 10px;
-  cursor: pointer;
-  font-weight: 600;
+  gap: 25px;
+
+  padding-bottom: 24px;
+
+  border-bottom:
+    1px solid #e8edf2;
 }
 
-.primaryButton {
-  padding: 0 18px;
-  background: #20364f;
-  color: white;
+.addRMBox h2 {
+  margin: 0 0 7px;
+}
+
+.addRMBox p {
+  margin: 0;
+
+  color: #718096;
+}
+
+.addRMForm {
+  display: flex;
+  gap: 10px;
+
+  width: min(100%, 480px);
 }
 
 .rmList {
@@ -695,96 +1053,94 @@ td {
   gap: 10px;
 }
 
-.rmRow {
+.rmListItem {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  padding: 15px;
-  border: 1px solid #e5ebf1;
-  border-radius: 11px;
-}
 
-.rmRow > div {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+  padding: 14px 16px;
 
-.status {
-  padding: 5px 9px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 700;
-}
+  border:
+    1px solid #e1e7ed;
 
-.activeStatus {
-  color: #27734c;
-  background: #eaf8ef;
-}
-
-.inactiveStatus {
-  color: #9a5252;
-  background: #fff0f0;
-}
-
-.activateButton,
-.inactiveButton {
-  padding: 9px 12px;
-}
-
-.activateButton {
-  color: #27734c;
-  background: #eaf8ef;
-}
-
-.inactiveButton {
-  color: #a63c3c;
-  background: #fff0f0;
-}
-
-/* ================= MESSAGES ================= */
-
-.errorBox,
-.messageBox {
-  margin-bottom: 16px;
-  padding: 13px 16px;
   border-radius: 10px;
 }
 
-.errorBox {
-  color: #a33737;
-  background: #fff0f0;
+.rmListItem > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  font-weight: 600;
 }
 
-.messageBox {
-  color: #26734e;
-  background: #edf9f1;
+.deleteButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  border:
+    1px solid #f1c9cc;
+
+  border-radius: 8px;
+
+  padding: 8px 10px;
+
+  background: #fff;
+  color: #c44149;
+
+  cursor: pointer;
 }
 
-/* ================= RESPONSIVE ================= */
+.deleteButton:hover {
+  background: #fff3f4;
+}
 
-@media (max-width: 1200px) {
-  .summaryCards {
+.emptyState,
+.emptyChart {
+  display: grid;
+  place-items: center;
+
+  min-height: 120px;
+
+  color: #8a97a8;
+
+  font-size: 13px;
+}
+
+/* ==============================
+   RESPONSIVE
+================================ */
+
+@media (max-width: 1350px) {
+  .metricGrid {
     grid-template-columns:
-      repeat(3, 1fr);
+      repeat(3, minmax(0, 1fr));
   }
 
   .dashboardGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
   }
 
-  .classificationAnalysis {
-    grid-column: auto;
+  .analysisPanel {
+    grid-column: span 2;
+  }
+
+  .recentPanel {
+    grid-column: span 2;
   }
 }
 
-@media (max-width: 850px) {
+@media (max-width: 950px) {
   .sidebar {
-    width: 75px;
+    width: 74px;
+    min-width: 74px;
   }
 
   .brand {
     padding: 12px;
+    justify-content: center;
   }
 
   .brand img {
@@ -793,7 +1149,8 @@ td {
 
   .navItem {
     justify-content: center;
-    padding: 16px;
+    padding: 15px 8px;
+
     font-size: 0;
   }
 
@@ -801,50 +1158,80 @@ td {
     display: none;
   }
 
-  .mainContent {
-    padding: 0 15px 25px;
+  .mainArea {
+    padding: 20px;
+  }
+
+  .dashboardGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .classificationPanel,
+  .monthlyPanel,
+  .analysisPanel,
+  .rmPanel,
+  .recentPanel {
+    grid-column: auto;
+  }
+
+  .addRMBox {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
-@media (max-width: 600px) {
-  .summaryCards {
-    grid-template-columns:
-      repeat(2, 1fr);
+@media (max-width: 650px) {
+  .appShell {
+    display: block;
   }
 
-  .loginCard {
-    padding: 32px 24px;
-  }
-
-  .filters {
-    align-items: stretch;
-  }
-
-  .filters select,
-  .filters input {
+  .sidebar {
     width: 100%;
+    min-width: 0;
+    min-height: auto;
+
+    flex-direction: row;
   }
 
-  .rmAddCard form {
-    flex-direction: column;
+  .brand {
+    display: none;
   }
 
-  .rmRow {
+  .sideNav {
+    width: 100%;
+
+    grid-template-columns:
+      repeat(3, 1fr);
+  }
+
+  .navItem {
+    font-size: 11px;
+    gap: 5px;
+  }
+
+  .metricGrid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+
+  .mainArea {
+    padding: 14px;
+  }
+
+  .topHeader {
     align-items: flex-start;
-    gap: 12px;
-    flex-direction: column;
+    gap: 15px;
+  }
+
+  .topHeader h1 {
+    font-size: 20px;
   }
 
   .classificationContent {
     flex-direction: column;
   }
 
-  .analysisRow {
-    grid-template-columns:
-      85px 1fr;
-  }
-
-  .analysisRow b {
-    grid-column: 2;
+  .addRMForm {
+    flex-direction: column;
   }
 }
