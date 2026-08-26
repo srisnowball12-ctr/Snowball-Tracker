@@ -40,14 +40,47 @@ const norm = s =>
 
 const iso = v => {
   if (!v) return null
-  if (v instanceof Date) return v.toISOString().slice(0, 10)
+
+  if (v instanceof Date) {
+    const y = v.getFullYear()
+    const m = String(v.getMonth() + 1).padStart(2, '0')
+    const d = String(v.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+
   if (typeof v === 'number') {
     const excelEpoch = new Date(Date.UTC(1899, 11, 30))
-    return new Date(excelEpoch.getTime() + v * 86400000)
-      .toISOString()
-      .slice(0, 10)
+    const d = new Date(excelEpoch.getTime() + v * 86400000)
+    return d.toISOString().slice(0, 10)
   }
-  const d = new Date(v)
+
+  const text = String(v).trim()
+
+  // Snowball / NJ upload format: DD-MM-YYYY or DD/MM/YYYY.
+  // Parse manually because new Date('05-08-2026') is interpreted
+  // as MM-DD-YYYY in some browsers.
+  const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
+
+  if (match) {
+    const [, day, month, year] = match
+    const dd = Number(day)
+    const mm = Number(month)
+    const yyyy = Number(year)
+
+    const test = new Date(Date.UTC(yyyy, mm - 1, dd))
+
+    if (
+      test.getUTCFullYear() === yyyy &&
+      test.getUTCMonth() === mm - 1 &&
+      test.getUTCDate() === dd
+    ) {
+      return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+    }
+
+    return null
+  }
+
+  const d = new Date(text)
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
 }
 
