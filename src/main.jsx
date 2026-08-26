@@ -178,7 +178,7 @@ function mapRow(row) {
       'investor_name'
     ) || null,
     transaction_date: iso(
-      get('Date', 'Transaction Date', 'transaction_date')
+      get('Date', 'Redemption Date', 'Transaction Date', 'transaction_date')
     ),
     folio_no: String(
       get(
@@ -714,42 +714,75 @@ function App() {
         )
       }
 
-      const analysed = classifyRows(mapped).map(x => ({
-        ...x,
-        classified_transaction_type: x.display_classification,
-        classification_reason: null
-      }))
+      // Classify every valid transaction before saving.
+      // Do not remove rows that look duplicated: identical-looking
+      // transactions can still be legitimate separate transactions.
+      const analysed = classifyRows(mapped).map(
+        ({ display_classification, ...row }) => ({
+          ...row,
+          classified_transaction_type: display_classification || 'Redemption',
+          classification_status: 'Completed',
+          classification_reason: null
+        })
+      )
 
-      setMessage(`Uploading ${analysed.length} analysed transactions...`)
+      const uploadDates = [
+        ...new Set(
+          analysed
+            .map(x => x.transaction_date)
+            .filter(Boolean)
+        )
+      ]
 
-      for (let i = 0; i < analysed.length; i += 500) {
-        const payload = analysed
-          .slice(i, i + 500)
-          .map(({ display_classification, ...row }) => row)
+      setMessage(
+        `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
+      )
 
-        const { error } = await supabase
-          .from('transactions')
-          .insert(payload)
+      // The Supabase function replaces only the dates contained in
+      // this upload. Therefore a corrected NJ file can change a day
+      // from, for example, 46 transactions to 54 without duplication.
+      const { data, error: rpcError } = await supabase.rpc(
+        'replace_transactions_for_dates',
+        {
+          p_dates: uploadDates,
+          p_rows: analysed
+        }
+      )
 
-        if (error) throw error
+      if (rpcError) throw rpcError
+
+      const inserted = Number(
+        data?.inserted_transactions ?? analysed.length
+      )
+
+      if (inserted !== analysed.length) {
+        throw new Error(
+          `Upload verification failed. Excel contained ${analysed.length} valid transactions but ${inserted} were saved.`
+        )
       }
 
-      setMessage('Excel analysed successfully. Transaction data and dashboard updated.')
       await loadData()
       await loadRms()
-    } catch (err) {
-      setError(err.message)
-      setMessage('')
-    }
 
-    setUploading(false)
-    e.target.value = ''
+      await notify(
+        'Upload completed',
+        `${inserted} transactions updated across ${uploadDates.length} date(s). The latest uploaded data now replaces previous data for those dates.`
+      )
+    } catch (err) {
+      console.error(err)
+      setError(err?.message || 'Upload failed. Please try again.')
+      setMessage('')
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
   }
 
   function exportExcel() {
     const out = filtered.map(x => ({
       Date: x.transaction_date,
       RM: x.rm_name,
+      Group: x.group_name,
       Investor: x.investor_name,
       Folio: x.folio_no,
       Scheme: x.scheme,
@@ -759,10 +792,24 @@ function App() {
     }))
 
     const ws = XLSX.utils.json_to_sheet(out)
+
+    ws['!cols'] = [
+      { wch: 14 },
+      { wch: 22 },
+      { wch: 32 },
+      { wch: 30 },
+      { wch: 20 },
+      { wch: 48 },
+      { wch: 16 },
+      { wch: 15 },
+      { wch: 18 }
+    ]
+
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Snowball Tracker')
     XLSX.writeFile(wb, 'snowball-transaction-report.xlsx')
   }
+
   function exportPDF() {
     const doc = new jsPDF({
       orientation: 'landscape',
@@ -797,50 +844,68 @@ function App() {
     autoTable(doc, {
       startY: 25,
       margin: { left: 10, right: 10, bottom: 12 },
+
       head: [[
-        'Date', 'RM', 'Investor', 'Scheme',
-        'Amount', 'Source', 'Classification'
+        'Date',
+        'RM',
+        'Group',
+        'Investor',
+        'Scheme',
+        'Amount',
+        'Source',
+        'Classification'
       ]],
+
       body: filtered.map(x => [
         x.transaction_date || '',
         x.rm_name || '',
+        x.group_name || '',
         x.investor_name || '',
         x.scheme || '',
         pdfMoney(x.amount),
         sourceLabel(x.original_transaction_type),
         x.display_classification || ''
       ]),
+
       theme: 'grid',
+
       styles: {
-        fontSize: 7.5,
-        cellPadding: 2,
+        fontSize: 6.6,
+        cellPadding: 1.7,
         valign: 'middle',
         lineColor: [220, 225, 230],
         lineWidth: 0.15
       },
+
       headStyles: {
         fillColor: [55, 115, 155],
         textColor: [255, 255, 255],
         fontStyle: 'bold',
-        fontSize: 7.5,
+        fontSize: 6.8,
         halign: 'left'
       },
+
       alternateRowStyles: {
         fillColor: [247, 249, 251]
       },
+
       columnStyles: {
-        0: { cellWidth: 22, overflow: 'ellipsize' },
-        1: { cellWidth: 30, overflow: 'linebreak' },
-        2: { cellWidth: 43, overflow: 'linebreak' },
-        3: { cellWidth: 70, overflow: 'linebreak' },
-        4: { cellWidth: 30, halign: 'right', overflow: 'ellipsize' },
-        5: { cellWidth: 28, halign: 'center', overflow: 'ellipsize' },
-        6: { cellWidth: 36, halign: 'center', overflow: 'ellipsize' }
+        0: { cellWidth: 20, overflow: 'ellipsize' },
+        1: { cellWidth: 25, overflow: 'linebreak' },
+        2: { cellWidth: 35, overflow: 'linebreak' },
+        3: { cellWidth: 38, overflow: 'linebreak' },
+        4: { cellWidth: 62, overflow: 'linebreak' },
+        5: { cellWidth: 28, halign: 'right', overflow: 'ellipsize' },
+        6: { cellWidth: 26, halign: 'center', overflow: 'ellipsize' },
+        7: { cellWidth: 33, halign: 'center', overflow: 'ellipsize' }
       },
+
       didDrawPage: function () {
         const pageNumber = doc.internal.getCurrentPageInfo().pageNumber
+
         doc.setFontSize(8)
         doc.setTextColor(120, 130, 140)
+
         doc.text(
           `Page ${pageNumber}`,
           pageWidth - 10,
