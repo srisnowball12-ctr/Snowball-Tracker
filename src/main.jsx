@@ -8,7 +8,7 @@ import {
   Upload, Download, FileText, LogOut, RefreshCw,
   LayoutDashboard, Table2, Settings, Users,
   Eye, EyeOff, ArrowLeft, UserPlus, UserMinus,
-  ShieldCheck, CheckCircle2, CircleDot, Bell, X, Mail
+  ShieldCheck, CheckCircle2, Bell, X, Mail
 } from 'lucide-react'
 import logoUrl from './logo.png'
 import './styles.css'
@@ -56,9 +56,6 @@ const iso = v => {
 
   const text = String(v).trim()
 
-  // Snowball / NJ upload format: DD-MM-YYYY or DD/MM/YYYY.
-  // Parse manually because new Date('05-08-2026') is interpreted
-  // as MM-DD-YYYY in some browsers.
   const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
 
   if (match) {
@@ -103,7 +100,7 @@ function classifyRows(rows) {
   const output = rows.map(row => ({ ...row }))
   const groups = new Map()
 
-  output.forEach((row, index) => {
+  output.forEach(row => {
     const key = [
       norm(row.investor_name),
       norm(row.folio_no),
@@ -111,58 +108,82 @@ function classifyRows(rows) {
     ].join('|')
 
     if (!groups.has(key)) groups.set(key, [])
-    groups.get(key).push({ row, index })
+    groups.get(key).push(row)
   })
 
   groups.forEach(items => {
     items.sort((a, b) =>
-      String(a.row.transaction_date || '').localeCompare(
-        String(b.row.transaction_date || '')
+      String(a.transaction_date || '').localeCompare(
+        String(b.transaction_date || '')
       )
     )
 
-    const explicit = items.map(item =>
-      explicitClassification(item.row.original_transaction_type)
-    )
+    // Start from the conservative position:
+    // every non-explicit transaction is Redemption.
+    // Old database classifications are deliberately not reused here,
+    // otherwise historical false-positive SWPs would continue to show.
+    items.forEach(row => {
+      const explicit = explicitClassification(
+        row.original_transaction_type
+      )
 
-    items.forEach((item, position) => {
-      if (explicit[position]) {
-        item.row.display_classification = explicit[position]
-        return
+      row.display_classification = explicit || 'Redemption'
+    })
+
+    // Only non-explicit transactions are candidates for inferred SWP.
+    const candidates = items
+      .map((row, index) => ({
+        row,
+        index,
+        date: new Date(`${row.transaction_date}T00:00:00`),
+        amount: Number(row.amount || 0),
+        explicit: explicitClassification(
+          row.original_transaction_type
+        )
+      }))
+      .filter(item =>
+        !item.explicit &&
+        !Number.isNaN(item.date.getTime()) &&
+        Number.isFinite(item.amount) &&
+        item.amount > 0
+      )
+
+    // Genuine SWP rule:
+    // 1. Same Investor + Folio + Scheme (this group)
+    // 2. At least 3 consecutive withdrawals
+    // 3. Each gap is approximately one month: 25–40 days
+    // 4. Successive amounts are reasonably consistent: within 15%
+    //
+    // A one-off or occasional redemption must remain Redemption.
+    for (let start = 0; start <= candidates.length - 3; start++) {
+      const sequence = [candidates[start]]
+
+      for (let next = start + 1; next < candidates.length; next++) {
+        const previous = sequence[sequence.length - 1]
+        const current = candidates[next]
+
+        const days = Math.round(
+          (current.date - previous.date) / 86400000
+        )
+
+        if (days < 25) continue
+        if (days > 40) break
+
+        const amountDiff =
+          Math.abs(current.amount - previous.amount) /
+          Math.max(previous.amount, current.amount, 1)
+
+        if (amountDiff > 0.15) break
+
+        sequence.push(current)
       }
 
-      const current = item.row
-      const currentDate = new Date(`${current.transaction_date}T00:00:00`)
-      const currentAmount = Number(current.amount || 0)
-
-      const prior = items
-        .slice(Math.max(0, position - 4), position)
-        .filter(x => !explicitClassification(x.row.original_transaction_type))
-        .map(x => ({
-          date: new Date(`${x.row.transaction_date}T00:00:00`),
-          amount: Number(x.row.amount || 0)
-        }))
-
-      const recurring = prior.filter(x => {
-        const days = Math.round(
-          Math.abs(currentDate - x.date) / 86400000
-        )
-        const amountDiff =
-          Math.abs(currentAmount - x.amount) /
-          Math.max(Math.max(currentAmount, x.amount), 1)
-
-        return days >= 20 && days <= 45 && amountDiff <= 0.35
-      })
-
-      const existing =
-        current.classified_transaction_type &&
-        current.classified_transaction_type !== 'Needs Review'
-          ? current.classified_transaction_type
-          : null
-
-      item.row.display_classification =
-        recurring.length >= 2 ? 'SWP' : (existing || 'Redemption')
-    })
+      if (sequence.length >= 3) {
+        sequence.forEach(item => {
+          item.row.display_classification = 'SWP'
+        })
+      }
+    }
   })
 
   return output
@@ -224,7 +245,8 @@ function mapRow(row) {
     scheme: get('Scheme', 'Fund', 'scheme') || null,
     amount: Number.isFinite(amount) ? amount : null,
     original_transaction_type: sourceLabel(originalType),
-    classified_transaction_type: explicitClassification(originalType) || 'Redemption',
+    classified_transaction_type:
+      explicitClassification(originalType) || 'Redemption',
     classification_status: 'Completed',
     classification_reason: null
   }
@@ -339,11 +361,8 @@ function App() {
     setError('')
 
     try {
-      // Supabase/PostgREST returns a maximum batch of rows unless we
-      // explicitly paginate. Fetch every batch so the dashboard is not
-      // limited to the most recent 1,000 transactions.
       const allRows = []
-      const pageSize = 1000
+      const batchSize = 1000
       let fromRow = 0
 
       while (true) {
@@ -352,15 +371,15 @@ function App() {
           .select('*')
           .order('transaction_date', { ascending: false })
           .order('id', { ascending: false })
-          .range(fromRow, fromRow + pageSize - 1)
+          .range(fromRow, fromRow + batchSize - 1)
 
         if (error) throw error
 
         const batch = data || []
         allRows.push(...batch)
 
-        if (batch.length < pageSize) break
-        fromRow += pageSize
+        if (batch.length < batchSize) break
+        fromRow += batchSize
       }
 
       setRows(allRows)
@@ -416,12 +435,17 @@ function App() {
       .single()
 
     if (!error && data) {
-      setNotifications(prev => [data, ...prev.filter(x => x.id !== item.id)])
+      setNotifications(prev =>
+        [data, ...prev.filter(x => x.id !== item.id)]
+      )
     }
   }
 
   async function markNotificationsRead() {
-    setNotifications(prev => prev.map(x => ({ ...x, is_read: true })))
+    setNotifications(prev =>
+      prev.map(x => ({ ...x, is_read: true }))
+    )
+
     await supabase
       .from('notifications')
       .update({ is_read: true })
@@ -464,7 +488,12 @@ function App() {
     if (!item.id) {
       const { error } = await supabase
         .from('rms')
-        .insert({ name: item.name, is_active: nextActive, is_admin: false })
+        .insert({
+          name: item.name,
+          is_active: nextActive,
+          is_admin: false
+        })
+
       if (error && error.code !== '23505') {
         setError(error.message)
         return
@@ -474,6 +503,7 @@ function App() {
         .from('rms')
         .update({ is_active: nextActive })
         .eq('id', item.id)
+
       if (error) {
         setError(error.message)
         return
@@ -482,8 +512,11 @@ function App() {
 
     await notify(
       nextActive ? 'RM activated' : 'RM marked inactive',
-      `${item.name} has been ${nextActive ? 'activated' : 'marked inactive'}.`
+      `${item.name} has been ${
+        nextActive ? 'activated' : 'marked inactive'
+      }.`
     )
+
     await loadRms()
   }
 
@@ -492,6 +525,7 @@ function App() {
       toggleAdmin(item, item.admin_email || '')
       return
     }
+
     setAdminModal(item)
     setAdminEmail(item.admin_email || '')
   }
@@ -509,6 +543,7 @@ function App() {
           is_admin: nextAdmin,
           admin_email: nextAdmin ? emailAddress : null
         })
+
       if (error && error.code !== '23505') {
         setError(error.message)
         return
@@ -521,6 +556,7 @@ function App() {
           admin_email: nextAdmin ? emailAddress : null
         })
         .eq('id', item.id)
+
       if (error) {
         setError(error.message)
         return
@@ -533,6 +569,7 @@ function App() {
         ? `${item.name} has been granted admin access for ${emailAddress}.`
         : `${item.name}'s admin access has been removed.`
     )
+
     setAdminModal(null)
     setAdminEmail('')
     await loadRms()
@@ -541,15 +578,27 @@ function App() {
   async function confirmAdmin(e) {
     e.preventDefault()
     const cleanEmail = adminEmail.trim().toLowerCase()
+
     if (!cleanEmail || !/^\S+@\S+\.\S+$/.test(cleanEmail)) {
-      setError('Please enter a valid email address for admin login access.')
+      setError(
+        'Please enter a valid email address for admin login access.'
+      )
       return
     }
+
     await toggleAdmin(adminModal, cleanEmail)
   }
 
+  // Supabase is the final source of truth for existing transactions.
+  // Do not reclassify rows after loading them, because the database
+  // already contains the corrected classified_transaction_type.
   const analysedRows = useMemo(
-    () => classifyRows(rows),
+    () =>
+      rows.map(row => ({
+        ...row,
+        display_classification:
+          row.classified_transaction_type || 'Redemption'
+      })),
     [rows]
   )
 
@@ -642,7 +691,10 @@ function App() {
     const sum = type =>
       filtered
         .filter(x => x.display_classification === type)
-        .reduce((total, x) => total + Number(x.amount || 0), 0)
+        .reduce(
+          (total, x) => total + Number(x.amount || 0),
+          0
+        )
 
     return {
       Redemption: sum('Redemption'),
@@ -658,6 +710,7 @@ function App() {
 
   const chartData = useMemo(() => {
     const map = {}
+
     filtered.forEach(x => {
       const key = x.rm_name || 'Unassigned'
       map[key] = (map[key] || 0) + Number(x.amount || 0)
@@ -675,27 +728,50 @@ function App() {
   )
 
   const classificationChart = useMemo(() => [
-    { name: 'Redemption', amount: totals.Redemption, color: '#c9565a' },
-    { name: 'SWP', amount: totals.SWP, color: '#5a9b88' },
-    { name: 'Switch', amount: totals.Switch, color: '#597aa1' },
-    { name: 'STP', amount: totals.STP, color: '#8067a8' }
+    {
+      name: 'Redemption',
+      amount: totals.Redemption,
+      color: '#c9565a'
+    },
+    {
+      name: 'SWP',
+      amount: totals.SWP,
+      color: '#5a9b88'
+    },
+    {
+      name: 'Switch',
+      amount: totals.Switch,
+      color: '#597aa1'
+    },
+    {
+      name: 'STP',
+      amount: totals.STP,
+      color: '#8067a8'
+    }
   ], [totals])
 
   const classificationTotal = useMemo(
-    () => classificationChart.reduce((sum, x) => sum + x.amount, 0),
+    () => classificationChart.reduce(
+      (sum, x) => sum + x.amount,
+      0
+    ),
     [classificationChart]
   )
 
   const donutStyle = useMemo(() => {
     if (!classificationTotal) {
-      return { background: 'conic-gradient(#dfe5ed 0 100%)' }
+      return {
+        background: 'conic-gradient(#dfe5ed 0 100%)'
+      }
     }
 
     let cursor = 0
+
     const parts = classificationChart
       .filter(x => x.amount > 0)
       .map(x => {
-        const next = cursor + (x.amount / classificationTotal) * 100
+        const next =
+          cursor + (x.amount / classificationTotal) * 100
         const part = `${x.color} ${cursor}% ${next}%`
         cursor = next
         return part
@@ -708,21 +784,33 @@ function App() {
 
   const monthlyTrend = useMemo(() => {
     const map = new Map()
+
     filtered.forEach(x => {
       const key = String(x.transaction_date || '').slice(0, 7)
       if (!key) return
-      if (!map.has(key)) map.set(key, {
-        Redemption: 0, SWP: 0, Switch: 0, STP: 0
-      })
+
+      if (!map.has(key)) {
+        map.set(key, {
+          Redemption: 0,
+          SWP: 0,
+          Switch: 0,
+          STP: 0
+        })
+      }
+
       const bucket = map.get(key)
       bucket[x.display_classification] =
-        (bucket[x.display_classification] || 0) + Number(x.amount || 0)
+        (bucket[x.display_classification] || 0) +
+        Number(x.amount || 0)
     })
 
     return Array.from(map.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-6)
-      .map(([month, values]) => ({ month, ...values }))
+      .map(([month, values]) => ({
+        month,
+        ...values
+      }))
   }, [filtered])
 
   const paginatedRows = useMemo(() => {
@@ -771,13 +859,11 @@ function App() {
         )
       }
 
-      // Classify every valid transaction before saving.
-      // Do not remove rows that look duplicated: identical-looking
-      // transactions can still be legitimate separate transactions.
       const analysed = classifyRows(mapped).map(
         ({ display_classification, ...row }) => ({
           ...row,
-          classified_transaction_type: display_classification || 'Redemption',
+          classified_transaction_type:
+            display_classification || 'Redemption',
           classification_status: 'Completed',
           classification_reason: null
         })
@@ -795,9 +881,6 @@ function App() {
         `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
       )
 
-      // The Supabase function replaces only the dates contained in
-      // this upload. Therefore a corrected NJ file can change a day
-      // from, for example, 46 transactions to 54 without duplication.
       const { data, error: rpcError } = await supabase.rpc(
         'replace_transactions_for_dates',
         {
@@ -863,8 +946,16 @@ function App() {
     ]
 
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Snowball Tracker')
-    XLSX.writeFile(wb, 'snowball-transaction-report.xlsx')
+    XLSX.utils.book_append_sheet(
+      wb,
+      ws,
+      'Snowball Tracker'
+    )
+
+    XLSX.writeFile(
+      wb,
+      'snowball-transaction-report.xlsx'
+    )
   }
 
   function exportPDF() {
@@ -878,9 +969,10 @@ function App() {
     const pageHeight = doc.internal.pageSize.getHeight()
 
     const pdfMoney = value =>
-      `Rs. ${Number(value || 0).toLocaleString('en-IN', {
-        maximumFractionDigits: 0
-      })}`
+      `Rs. ${Number(value || 0).toLocaleString(
+        'en-IN',
+        { maximumFractionDigits: 0 }
+      )}`
 
     doc.setFontSize(18)
     doc.setTextColor(36, 55, 75)
@@ -888,7 +980,11 @@ function App() {
 
     doc.setFontSize(10.5)
     doc.setTextColor(90, 105, 120)
-    doc.text('Transaction & Redemption Analysis', 12, 21)
+    doc.text(
+      'Transaction & Redemption Analysis',
+      12,
+      21
+    )
 
     doc.setFontSize(8)
     doc.text(
@@ -900,7 +996,11 @@ function App() {
 
     autoTable(doc, {
       startY: 27,
-      margin: { left: 12, right: 12, bottom: 14 },
+      margin: {
+        left: 12,
+        right: 12,
+        bottom: 14
+      },
 
       head: [[
         'Date',
@@ -960,7 +1060,8 @@ function App() {
       },
 
       didDrawPage: function () {
-        const pageNumber = doc.internal.getCurrentPageInfo().pageNumber
+        const pageNumber =
+          doc.internal.getCurrentPageInfo().pageNumber
 
         doc.setFontSize(8)
         doc.setTextColor(120, 130, 140)
@@ -1000,11 +1101,14 @@ function App() {
 
             <form onSubmit={sendResetPassword}>
               <label>Email Address</label>
+
               <input
                 type="email"
                 placeholder="Enter your email"
                 value={forgotEmail}
-                onChange={e => setForgotEmail(e.target.value)}
+                onChange={e =>
+                  setForgotEmail(e.target.value)
+                }
                 required
               />
 
@@ -1012,12 +1116,19 @@ function App() {
                 className="primaryButton fullButton"
                 disabled={loading}
               >
-                {loading ? 'Sending...' : 'Send Reset Instructions'}
+                {loading
+                  ? 'Sending...'
+                  : 'Send Reset Instructions'}
               </button>
 
-              {error && <div className="error">{error}</div>}
+              {error && (
+                <div className="error">{error}</div>
+              )}
+
               {forgotMessage && (
-                <div className="successBox">{forgotMessage}</div>
+                <div className="successBox">
+                  {forgotMessage}
+                </div>
               )}
             </form>
           </section>
@@ -1029,12 +1140,14 @@ function App() {
       <main className="loginPage">
         <section className="loginCard">
           <h1>Snowball Redemption Tracker</h1>
+
           <p className="loginSub">
             Login to access the transaction dashboard.
           </p>
 
           <form onSubmit={login}>
             <label>Email Address</label>
+
             <input
               type="email"
               placeholder="Enter your email"
@@ -1044,18 +1157,24 @@ function App() {
             />
 
             <label>Password</label>
+
             <div className="passwordWrap">
               <input
                 type={showPassword ? 'text' : 'password'}
                 placeholder="Enter your password"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={e =>
+                  setPassword(e.target.value)
+                }
                 required
               />
+
               <button
                 type="button"
                 className="passwordToggle"
-                onClick={() => setShowPassword(!showPassword)}
+                onClick={() =>
+                  setShowPassword(!showPassword)
+                }
               >
                 {showPassword
                   ? <EyeOff size={18} />
@@ -1081,7 +1200,9 @@ function App() {
               Forgot / Reset Password?
             </button>
 
-            {error && <div className="error">{error}</div>}
+            {error && (
+              <div className="error">{error}</div>
+            )}
           </form>
         </section>
       </main>
@@ -1099,12 +1220,17 @@ function App() {
     <div className="appShell">
       <aside className="sidebar">
         <div className="sidebarBrand">
-          <img src={logoUrl} alt="Snowball Financial Services" />
+          <img
+            src={logoUrl}
+            alt="Snowball Financial Services"
+          />
         </div>
 
         <nav className="sidebarNav">
           <button
-            className={page === 'dashboard' ? 'navActive' : ''}
+            className={
+              page === 'dashboard' ? 'navActive' : ''
+            }
             onClick={() => setPage('dashboard')}
           >
             <LayoutDashboard size={18} />
@@ -1112,7 +1238,9 @@ function App() {
           </button>
 
           <button
-            className={page === 'transactions' ? 'navActive' : ''}
+            className={
+              page === 'transactions' ? 'navActive' : ''
+            }
             onClick={() => setPage('transactions')}
           >
             <Table2 size={18} />
@@ -1120,7 +1248,9 @@ function App() {
           </button>
 
           <button
-            className={page === 'settings' ? 'navActive' : ''}
+            className={
+              page === 'settings' ? 'navActive' : ''
+            }
             onClick={() => setPage('settings')}
           >
             <Settings size={18} />
@@ -1140,6 +1270,7 @@ function App() {
         <header className="topHeader">
           <div>
             <h1>{title}</h1>
+
             <p>
               {page === 'dashboard' &&
                 'Analyse transactions and monitor redemption activity'}
@@ -1156,26 +1287,66 @@ function App() {
                 className="iconButton notificationBell"
                 onClick={async () => {
                   setShowNotifications(v => !v)
-                  if (!showNotifications) await markNotificationsRead()
+
+                  if (!showNotifications) {
+                    await markNotificationsRead()
+                  }
                 }}
                 title="Notifications"
               >
                 <Bell size={18} />
+
                 {notifications.filter(x => !x.is_read).length > 0 && (
-                  <span className="notificationCount">{notifications.filter(x => !x.is_read).length}</span>
+                  <span className="notificationCount">
+                    {
+                      notifications.filter(
+                        x => !x.is_read
+                      ).length
+                    }
+                  </span>
                 )}
               </button>
+
               {showNotifications && (
                 <div className="notificationPanel">
-                  <div className="notificationPanelHead"><strong>Notifications</strong><button onClick={() => setShowNotifications(false)}><X size={16} /></button></div>
-                  {notifications.length === 0 ? <p className="notificationEmpty">No notifications yet.</p> : notifications.map(n => (
-                    <div className={`notificationItem ${n.is_read ? '' : 'unread'}`} key={n.id}>
-                      <strong>{n.title}</strong><span>{n.body}</span><small>{new Date(n.created_at).toLocaleString('en-IN')}</small>
-                    </div>
-                  ))}
+                  <div className="notificationPanelHead">
+                    <strong>Notifications</strong>
+
+                    <button
+                      onClick={() =>
+                        setShowNotifications(false)
+                      }
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  {notifications.length === 0
+                    ? (
+                      <p className="notificationEmpty">
+                        No notifications yet.
+                      </p>
+                    )
+                    : notifications.map(n => (
+                      <div
+                        className={`notificationItem ${
+                          n.is_read ? '' : 'unread'
+                        }`}
+                        key={n.id}
+                      >
+                        <strong>{n.title}</strong>
+                        <span>{n.body}</span>
+                        <small>
+                          {new Date(
+                            n.created_at
+                          ).toLocaleString('en-IN')}
+                        </small>
+                      </div>
+                    ))}
                 </div>
               )}
             </div>
+
             <button
               className="iconButton"
               onClick={() => {
@@ -1188,7 +1359,10 @@ function App() {
               <RefreshCw size={18} />
             </button>
 
-            <button className="logoutTop" onClick={handleLogout}>
+            <button
+              className="logoutTop"
+              onClick={handleLogout}
+            >
               <LogOut size={16} />
               Logout
             </button>
@@ -1197,13 +1371,20 @@ function App() {
               className="userBadge"
               title={session.user.email}
             >
-              {session.user.email?.charAt(0).toUpperCase()}
+              {session.user.email
+                ?.charAt(0)
+                .toUpperCase()}
             </div>
           </div>
         </header>
 
-        {error && <div className="error">{error}</div>}
-        {message && <div className="message">{message}</div>}
+        {error && (
+          <div className="error">{error}</div>
+        )}
+
+        {message && (
+          <div className="message">{message}</div>
+        )}
 
         {page !== 'settings' && (
           <section className="filterBar">
@@ -1232,7 +1413,9 @@ function App() {
               onChange={e => setRm(e.target.value)}
             >
               {activeRmNames.map(x => (
-                <option key={x} value={x}>{x}</option>
+                <option key={x} value={x}>
+                  {x}
+                </option>
               ))}
             </select>
 
@@ -1252,8 +1435,12 @@ function App() {
               <>
                 <button className="uploadButton">
                   <Upload size={17} />
+
                   <label>
-                    {uploading ? 'Uploading...' : 'Upload Excel'}
+                    {uploading
+                      ? 'Uploading...'
+                      : 'Upload Excel'}
+
                     <input
                       type="file"
                       accept=".xlsx,.xls,.csv"
@@ -1294,8 +1481,12 @@ function App() {
                 ['Investors', totals.Investors, 'investors'],
                 ['Transactions', totals.Transactions, 'transactions']
               ].map(([name, value, tone]) => (
-                <article className={`kpiCard ${tone}`} key={name}>
+                <article
+                  className={`kpiCard ${tone}`}
+                  key={name}
+                >
                   <span>{name}</span>
+
                   <strong>
                     {['Investors', 'Transactions'].includes(name)
                       ? Number(value).toLocaleString('en-IN')
@@ -1308,23 +1499,41 @@ function App() {
             <section className="dashboardGrid">
               <article className="chartCard classificationCard">
                 <h3>Amount by Classification</h3>
+
                 <div className="donutLayout">
-                  <div className="donut" style={donutStyle}>
+                  <div
+                    className="donut"
+                    style={donutStyle}
+                  >
                     <div className="donutHole">
-                      <strong>{totals.Transactions.toLocaleString('en-IN')}</strong>
+                      <strong>
+                        {totals.Transactions.toLocaleString(
+                          'en-IN'
+                        )}
+                      </strong>
+
                       <span>Transactions</span>
                     </div>
                   </div>
 
                   <div className="classificationLegend">
                     {classificationChart.map(item => (
-                      <div className="legendRow" key={item.name}>
+                      <div
+                        className="legendRow"
+                        key={item.name}
+                      >
                         <span
                           className="legendDot"
-                          style={{ background: item.color }}
+                          style={{
+                            background: item.color
+                          }}
                         />
+
                         <span>{item.name}</span>
-                        <strong>{compactMoney(item.amount)}</strong>
+
+                        <strong>
+                          {compactMoney(item.amount)}
+                        </strong>
                       </div>
                     ))}
                   </div>
@@ -1333,64 +1542,102 @@ function App() {
 
               <article className="chartCard">
                 <h3>Monthly Trend</h3>
+
                 <div className="trendChart">
-                  {monthlyTrend.length ? monthlyTrend.map(item => {
-                    const max = Math.max(
-                      ...monthlyTrend.flatMap(x => [
-                        x.Redemption, x.SWP, x.Switch, x.STP
-                      ]),
-                      1
-                    )
-                    return (
-                      <div className="trendMonth" key={item.month}>
-                        <div className="trendBars">
-                          {[
-                            ['Redemption', 'trendRed'],
-                            ['SWP', 'trendSwp'],
-                            ['Switch', 'trendSwitch'],
-                            ['STP', 'trendStp']
-                          ].map(([key, cls]) => (
-                            <div
-                              key={key}
-                              className={`trendBar ${cls}`}
-                              title={`${key}: ${money(item[key])}`}
-                              style={{
-                                height: `${Math.max(4, (item[key] / max) * 100)}%`
-                              }}
-                            />
-                          ))}
+                  {monthlyTrend.length
+                    ? monthlyTrend.map(item => {
+                      const max = Math.max(
+                        ...monthlyTrend.flatMap(x => [
+                          x.Redemption,
+                          x.SWP,
+                          x.Switch,
+                          x.STP
+                        ]),
+                        1
+                      )
+
+                      return (
+                        <div
+                          className="trendMonth"
+                          key={item.month}
+                        >
+                          <div className="trendBars">
+                            {[
+                              ['Redemption', 'trendRed'],
+                              ['SWP', 'trendSwp'],
+                              ['Switch', 'trendSwitch'],
+                              ['STP', 'trendStp']
+                            ].map(([key, cls]) => (
+                              <div
+                                key={key}
+                                className={`trendBar ${cls}`}
+                                title={`${key}: ${money(
+                                  item[key]
+                                )}`}
+                                style={{
+                                  height: `${
+                                    Math.max(
+                                      4,
+                                      (item[key] / max) * 100
+                                    )
+                                  }%`
+                                }}
+                              />
+                            ))}
+                          </div>
+
+                          <span>
+                            {item.month.slice(5)}
+                          </span>
                         </div>
-                        <span>{item.month.slice(5)}</span>
+                      )
+                    })
+                    : (
+                      <div className="emptyChart">
+                        No data available
                       </div>
-                    )
-                  }) : (
-                    <div className="emptyChart">No data available</div>
-                  )}
+                    )}
                 </div>
               </article>
 
               <article className="chartCard rmChartCard">
                 <h3>Transactions by RM</h3>
+
                 <div className="rmBars">
                   {chartData.map(item => (
-                    <div className="rmBarRow" key={item.name}>
-                      <span title={item.name}>{item.name}</span>
+                    <div
+                      className="rmBarRow"
+                      key={item.name}
+                    >
+                      <span title={item.name}>
+                        {item.name}
+                      </span>
+
                       <div className="rmBarTrack">
                         <div
                           className="rmBarFill"
                           style={{
-                            width: `${Math.max(
-                              3,
-                              (item.amount / maxChartValue) * 100
-                            )}%`
+                            width: `${
+                              Math.max(
+                                3,
+                                (item.amount /
+                                  maxChartValue) * 100
+                              )
+                            }%`
                           }}
                         />
                       </div>
-                      <strong>{compactMoney(item.amount)}</strong>
+
+                      <strong>
+                        {compactMoney(item.amount)}
+                      </strong>
                     </div>
                   ))}
+
                   {!chartData.length && (
-                    <div className="emptyChart">No data available</div>
+                    <div className="emptyChart">
+                      No data available
+                    </div>
                   )}
                 </div>
               </article>
@@ -1402,9 +1649,12 @@ function App() {
                   <h2>Recent Transactions</h2>
                   <p>Latest analysed transactions</p>
                 </div>
+
                 <button
                   className="viewAllButton"
-                  onClick={() => setPage('transactions')}
+                  onClick={() =>
+                    setPage('transactions')
+                  }
                 >
                   View All Transactions
                 </button>
@@ -1423,17 +1673,33 @@ function App() {
                       <th>Classification</th>
                     </tr>
                   </thead>
+
                   <tbody>
                     {filtered.slice(0, 10).map(x => (
-                      <tr key={x.id || `${x.investor_name}-${x.transaction_date}-${x.scheme}`}>
+                      <tr
+                        key={
+                          x.id ||
+                          `${x.investor_name}-${x.transaction_date}-${x.scheme}`
+                        }
+                      >
                         <td>{x.transaction_date}</td>
                         <td>{x.rm_name}</td>
                         <td>{x.investor_name}</td>
                         <td>{x.scheme}</td>
                         <td>{money(x.amount)}</td>
-                        <td>{sourceLabel(x.original_transaction_type)}</td>
                         <td>
-                          <span className={`classification ${String(x.display_classification).toLowerCase()}`}>
+                          {sourceLabel(
+                            x.original_transaction_type
+                          )}
+                        </td>
+                        <td>
+                          <span
+                            className={`classification ${
+                              String(
+                                x.display_classification
+                              ).toLowerCase()
+                            }`}
+                          >
                             {x.display_classification}
                           </span>
                         </td>
@@ -1451,7 +1717,9 @@ function App() {
             <div className="sectionHeading">
               <div>
                 <h2>Transaction Details</h2>
-                <p>{filtered.length} transactions found</p>
+                <p>
+                  {filtered.length} transactions found
+                </p>
               </div>
             </div>
 
@@ -1469,18 +1737,34 @@ function App() {
                     <th>Classification</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {paginatedRows.map(x => (
-                    <tr key={x.id || `${x.investor_name}-${x.transaction_date}-${x.scheme}`}>
+                    <tr
+                      key={
+                        x.id ||
+                        `${x.investor_name}-${x.transaction_date}-${x.scheme}`
+                      }
+                    >
                       <td>{x.transaction_date}</td>
                       <td>{x.rm_name}</td>
                       <td>{x.investor_name}</td>
                       <td>{x.folio_no}</td>
                       <td>{x.scheme}</td>
                       <td>{money(x.amount)}</td>
-                      <td>{sourceLabel(x.original_transaction_type)}</td>
                       <td>
-                        <span className={`classification ${String(x.display_classification).toLowerCase()}`}>
+                        {sourceLabel(
+                          x.original_transaction_type
+                        )}
+                      </td>
+                      <td>
+                        <span
+                          className={`classification ${
+                            String(
+                              x.display_classification
+                            ).toLowerCase()
+                          }`}
+                        >
                           {x.display_classification}
                         </span>
                       </td>
@@ -1493,14 +1777,22 @@ function App() {
             <div className="pagination">
               <button
                 disabled={currentPage === 1}
-                onClick={() => setCurrentPage(currentPage - 1)}
+                onClick={() =>
+                  setCurrentPage(currentPage - 1)
+                }
               >
                 Previous
               </button>
-              <span>Page {currentPage} of {totalPages}</span>
+
+              <span>
+                Page {currentPage} of {totalPages}
+              </span>
+
               <button
                 disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage(currentPage + 1)}
+                onClick={() =>
+                  setCurrentPage(currentPage + 1)
+                }
               >
                 Next
               </button>
@@ -1512,15 +1804,28 @@ function App() {
           <section className="settingsPage">
             <div className="settingsTabs">
               <button
-                className={settingsTab === 'current' ? 'tabActive' : ''}
-                onClick={() => setSettingsTab('current')}
+                className={
+                  settingsTab === 'current'
+                    ? 'tabActive'
+                    : ''
+                }
+                onClick={() =>
+                  setSettingsTab('current')
+                }
               >
                 <Users size={16} />
                 Current RMs
               </button>
+
               <button
-                className={settingsTab === 'admin' ? 'tabActive' : ''}
-                onClick={() => setSettingsTab('admin')}
+                className={
+                  settingsTab === 'admin'
+                    ? 'tabActive'
+                    : ''
+                }
+                onClick={() =>
+                  setSettingsTab('admin')
+                }
               >
                 <ShieldCheck size={16} />
                 Admin Settings
@@ -1531,14 +1836,20 @@ function App() {
               <>
                 <article className="rmAddCard">
                   <h2>Add New RM</h2>
-                  <p>Add an RM to the organisation. Existing RMs are never deleted; they can be marked inactive.</p>
+
+                  <p>
+                    Add an RM to the organisation. Existing RMs are never deleted; they can be marked inactive.
+                  </p>
 
                   <form onSubmit={addRm}>
                     <input
                       placeholder="Enter RM name"
                       value={newRm}
-                      onChange={e => setNewRm(e.target.value)}
+                      onChange={e =>
+                        setNewRm(e.target.value)
+                      }
                     />
+
                     <button className="primaryButton">
                       <UserPlus size={16} />
                       Add RM
@@ -1550,8 +1861,13 @@ function App() {
                   <div className="sectionHeading">
                     <div>
                       <h2>Current RMs</h2>
+
                       <p>
-                        {rmDirectory.filter(x => x.is_active !== false).length} active
+                        {
+                          rmDirectory.filter(
+                            x => x.is_active !== false
+                          ).length
+                        } active
                         {' • '}
                         {rmDirectory.length} total
                       </p>
@@ -1560,25 +1876,55 @@ function App() {
 
                   <div className="rmList">
                     {rmDirectory.map(item => (
-                      <div className="rmRow" key={item.id || item.name}>
+                      <div
+                        className="rmRow"
+                        key={item.id || item.name}
+                      >
                         <div className="rmAvatar">
-                          {item.name?.charAt(0).toUpperCase()}
+                          {item.name
+                            ?.charAt(0)
+                            .toUpperCase()}
                         </div>
 
                         <div className="rmName">
                           <strong>{item.name}</strong>
-                          <span className={item.is_active === false ? 'statusInactive' : 'statusActive'}>
-                            {item.is_active === false ? 'Inactive' : 'Active'}
+
+                          <span
+                            className={
+                              item.is_active === false
+                                ? 'statusInactive'
+                                : 'statusActive'
+                            }
+                          >
+                            {item.is_active === false
+                              ? 'Inactive'
+                              : 'Active'}
                           </span>
                         </div>
 
                         <button
-                          className={item.is_active === false ? 'activateButton' : 'deactivateButton'}
-                          onClick={() => toggleRmStatus(item)}
+                          className={
+                            item.is_active === false
+                              ? 'activateButton'
+                              : 'deactivateButton'
+                          }
+                          onClick={() =>
+                            toggleRmStatus(item)
+                          }
                         >
                           {item.is_active === false
-                            ? <><UserPlus size={14} /> Activate</>
-                            : <><UserMinus size={14} /> Mark Inactive</>}
+                            ? (
+                              <>
+                                <UserPlus size={14} />
+                                Activate
+                              </>
+                            )
+                            : (
+                              <>
+                                <UserMinus size={14} />
+                                Mark Inactive
+                              </>
+                            )}
                         </button>
                       </div>
                     ))}
@@ -1592,32 +1938,71 @@ function App() {
                 <div className="sectionHeading">
                   <div>
                     <h2>Admin Settings</h2>
-                    <p>Select which active Relationship Managers should have administrator access.</p>
+
+                    <p>
+                      Select which active Relationship Managers should have administrator access.
+                    </p>
                   </div>
                 </div>
 
                 <div className="rmList">
                   {rmDirectory.map(item => (
-                    <div className="rmRow" key={item.id || item.name}>
+                    <div
+                      className="rmRow"
+                      key={item.id || item.name}
+                    >
                       <div className="rmAvatar">
-                        {item.name?.charAt(0).toUpperCase()}
+                        {item.name
+                          ?.charAt(0)
+                          .toUpperCase()}
                       </div>
 
                       <div className="rmName">
                         <strong>{item.name}</strong>
-                        {item.is_admin && item.admin_email && <small className="adminEmail">{item.admin_email}</small>}
-                        <span className={item.is_admin ? 'statusAdmin' : 'statusInactive'}>
-                          {item.is_admin ? 'Admin' : 'Standard access'}
+
+                        {item.is_admin &&
+                          item.admin_email && (
+                            <small className="adminEmail">
+                              {item.admin_email}
+                            </small>
+                          )}
+
+                        <span
+                          className={
+                            item.is_admin
+                              ? 'statusAdmin'
+                              : 'statusInactive'
+                          }
+                        >
+                          {item.is_admin
+                            ? 'Admin'
+                            : 'Standard access'}
                         </span>
                       </div>
 
                       <button
-                        className={item.is_admin ? 'deactivateButton' : 'activateButton'}
-                        onClick={() => openAdminModal(item)}
+                        className={
+                          item.is_admin
+                            ? 'deactivateButton'
+                            : 'activateButton'
+                        }
+                        onClick={() =>
+                          openAdminModal(item)
+                        }
                       >
                         {item.is_admin
-                          ? <><CheckCircle2 size={14} /> Remove Admin</>
-                          : <><ShieldCheck size={14} /> Make Admin</>}
+                          ? (
+                            <>
+                              <CheckCircle2 size={14} />
+                              Remove Admin
+                            </>
+                          )
+                          : (
+                            <>
+                              <ShieldCheck size={14} />
+                              Make Admin
+                            </>
+                          )}
                       </button>
                     </div>
                   ))}
@@ -1628,22 +2013,78 @@ function App() {
         )}
 
         {adminModal && (
-          <div className="modalBackdrop" onMouseDown={() => setAdminModal(null)}>
-            <div className="adminModal" onMouseDown={e => e.stopPropagation()}>
+          <div
+            className="modalBackdrop"
+            onMouseDown={() =>
+              setAdminModal(null)
+            }
+          >
+            <div
+              className="adminModal"
+              onMouseDown={e => e.stopPropagation()}
+            >
               <div className="modalHeader">
-                <div><h2>Grant Admin Access</h2><p>Enter the email address this employee will use to log in.</p></div>
-                <button className="modalClose" onClick={() => setAdminModal(null)}><X size={18} /></button>
+                <div>
+                  <h2>Grant Admin Access</h2>
+
+                  <p>
+                    Enter the email address this employee will use to log in.
+                  </p>
+                </div>
+
+                <button
+                  className="modalClose"
+                  onClick={() =>
+                    setAdminModal(null)
+                  }
+                >
+                  <X size={18} />
+                </button>
               </div>
+
               <form onSubmit={confirmAdmin}>
                 <label>Login Email Address</label>
-                <div className="emailField"><Mail size={16} /><input autoFocus type="email" placeholder="name@snowballwealth.in" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} /></div>
-                <p className="modalNote">Admin access is linked to this email. The email must also have a valid Supabase Auth account to sign in.</p>
-                <div className="modalActions"><button type="button" onClick={() => setAdminModal(null)}>Cancel</button><button className="primaryButton" type="submit"><ShieldCheck size={16} /> Grant Admin Access</button></div>
+
+                <div className="emailField">
+                  <Mail size={16} />
+
+                  <input
+                    autoFocus
+                    type="email"
+                    placeholder="name@snowballwealth.in"
+                    value={adminEmail}
+                    onChange={e =>
+                      setAdminEmail(e.target.value)
+                    }
+                  />
+                </div>
+
+                <p className="modalNote">
+                  Admin access is linked to this email. The email must also have a valid Supabase Auth account to sign in.
+                </p>
+
+                <div className="modalActions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAdminModal(null)
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    className="primaryButton"
+                    type="submit"
+                  >
+                    <ShieldCheck size={16} />
+                    Grant Admin Access
+                  </button>
+                </div>
               </form>
             </div>
           </div>
         )}
-
       </main>
     </div>
   )
