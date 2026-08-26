@@ -336,16 +336,40 @@ function App() {
 
   async function loadData() {
     setLoading(true)
+    setError('')
 
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('*')
-      .order('transaction_date', { ascending: false })
+    try {
+      // Supabase/PostgREST returns a maximum batch of rows unless we
+      // explicitly paginate. Fetch every batch so the dashboard is not
+      // limited to the most recent 1,000 transactions.
+      const allRows = []
+      const pageSize = 1000
+      let fromRow = 0
 
-    if (error) setError(error.message)
-    else setRows(data || [])
+      while (true) {
+        const { data, error } = await supabase
+          .from('transactions')
+          .select('*')
+          .order('transaction_date', { ascending: false })
+          .order('id', { ascending: false })
+          .range(fromRow, fromRow + pageSize - 1)
 
-    setLoading(false)
+        if (error) throw error
+
+        const batch = data || []
+        allRows.push(...batch)
+
+        if (batch.length < pageSize) break
+        fromRow += pageSize
+      }
+
+      setRows(allRows)
+    } catch (err) {
+      setError(err.message || 'Unable to load transaction data.')
+      setRows([])
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function loadRms() {
