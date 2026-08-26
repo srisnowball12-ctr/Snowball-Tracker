@@ -858,25 +858,25 @@ function App() {
         maximumFractionDigits: 0
       })}`
 
-    doc.setFontSize(17)
+    doc.setFontSize(18)
     doc.setTextColor(36, 55, 75)
-    doc.text('Snowball Financial Services', 10, 13)
+    doc.text('Snowball Financial Services', 12, 14)
 
-    doc.setFontSize(10)
+    doc.setFontSize(10.5)
     doc.setTextColor(90, 105, 120)
-    doc.text('Transaction & Redemption Analysis', 10, 19)
+    doc.text('Transaction & Redemption Analysis', 12, 21)
 
     doc.setFontSize(8)
     doc.text(
       `Generated: ${new Date().toLocaleString('en-IN')}`,
-      pageWidth - 10,
-      13,
+      pageWidth - 12,
+      14,
       { align: 'right' }
     )
 
     autoTable(doc, {
-      startY: 25,
-      margin: { left: 10, right: 10, bottom: 12 },
+      startY: 27,
+      margin: { left: 12, right: 12, bottom: 14 },
 
       head: [[
         'Date',
@@ -903,18 +903,20 @@ function App() {
       theme: 'grid',
 
       styles: {
-        fontSize: 6.6,
-        cellPadding: 1.7,
+        fontSize: 8.2,
+        cellPadding: 2.1,
         valign: 'middle',
         lineColor: [220, 225, 230],
-        lineWidth: 0.15
+        lineWidth: 0.15,
+        overflow: 'linebreak'
       },
 
       headStyles: {
         fillColor: [55, 115, 155],
         textColor: [255, 255, 255],
         fontStyle: 'bold',
-        fontSize: 6.8,
+        fontSize: 8.2,
+        cellPadding: 2.2,
         halign: 'left'
       },
 
@@ -923,14 +925,14 @@ function App() {
       },
 
       columnStyles: {
-        0: { cellWidth: 20, overflow: 'ellipsize' },
-        1: { cellWidth: 25, overflow: 'linebreak' },
-        2: { cellWidth: 35, overflow: 'linebreak' },
-        3: { cellWidth: 38, overflow: 'linebreak' },
-        4: { cellWidth: 62, overflow: 'linebreak' },
-        5: { cellWidth: 28, halign: 'right', overflow: 'ellipsize' },
-        6: { cellWidth: 26, halign: 'center', overflow: 'ellipsize' },
-        7: { cellWidth: 33, halign: 'center', overflow: 'ellipsize' }
+        0: { cellWidth: 19 },
+        1: { cellWidth: 24 },
+        2: { cellWidth: 31 },
+        3: { cellWidth: 34 },
+        4: { cellWidth: 58 },
+        5: { cellWidth: 25, halign: 'right' },
+        6: { cellWidth: 24, halign: 'center' },
+        7: { cellWidth: 30, halign: 'center' }
       },
 
       didDrawPage: function () {
@@ -938,11 +940,10 @@ function App() {
 
         doc.setFontSize(8)
         doc.setTextColor(120, 130, 140)
-
         doc.text(
           `Page ${pageNumber}`,
-          pageWidth - 10,
-          pageHeight - 6,
+          pageWidth - 12,
+          pageHeight - 7,
           { align: 'right' }
         )
       }
