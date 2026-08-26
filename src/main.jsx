@@ -764,12 +764,145 @@ function App() {
     XLSX.writeFile(wb, 'snowball-transaction-report.xlsx')
   }
 
-  function exportPDF() {
-    const doc = new jsPDF({ orientation: 'landscape' })
-    doc.setFontSize(17)
-    doc.text('Snowball Financial Services', 14, 14)
-    doc.setFontSize(11)
-    doc.text('Transaction & Redemption Analysis', 14, 21)
+ function exportPDF() {
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4'
+  })
+
+  const pageWidth = doc.internal.pageSize.getWidth()
+
+  // Header
+  doc.setFontSize(18)
+  doc.setTextColor(36, 55, 75)
+  doc.text('Snowball Financial Services', 14, 14)
+
+  doc.setFontSize(10)
+  doc.setTextColor(90, 105, 120)
+  doc.text('Transaction & Redemption Analysis', 14, 21)
+
+  // Report date
+  doc.setFontSize(8)
+  doc.setTextColor(110, 120, 130)
+
+  const reportDate =
+    `Generated on: ${new Date().toLocaleString('en-IN')}`
+
+  doc.text(
+    reportDate,
+    pageWidth - 14,
+    14,
+    { align: 'right' }
+  )
+
+  autoTable(doc, {
+    startY: 27,
+
+    margin: {
+      left: 10,
+      right: 10,
+      bottom: 14
+    },
+
+    head: [[
+      'Date',
+      'RM',
+      'Investor',
+      'Scheme',
+      'Amount',
+      'Source',
+      'Classification'
+    ]],
+
+    body: filtered.map(x => [
+      x.transaction_date || '',
+      x.rm_name || '',
+      x.investor_name || '',
+      x.scheme || '',
+      money(x.amount),
+      sourceLabel(x.original_transaction_type),
+      x.display_classification || ''
+    ]),
+
+    theme: 'grid',
+
+    styles: {
+      fontSize: 7.5,
+      cellPadding: 2.5,
+      valign: 'middle',
+      overflow: 'linebreak',
+      lineColor: [220, 225, 230],
+      lineWidth: 0.15
+    },
+
+    headStyles: {
+      fillColor: [55, 115, 155],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 7.5,
+      halign: 'left'
+    },
+
+    alternateRowStyles: {
+      fillColor: [247, 249, 251]
+    },
+
+    columnStyles: {
+      0: {
+        cellWidth: 25,
+        whiteSpace: 'nowrap'
+      },
+
+      1: {
+        cellWidth: 35
+      },
+
+      2: {
+        cellWidth: 50
+      },
+
+      3: {
+        cellWidth: 70
+      },
+
+      4: {
+        cellWidth: 35,
+        halign: 'right',
+        overflow: 'ellipsize'
+      },
+
+      5: {
+        cellWidth: 28,
+        halign: 'center',
+        overflow: 'ellipsize'
+      },
+
+      6: {
+        cellWidth: 32,
+        halign: 'center',
+        overflow: 'ellipsize'
+      }
+    },
+
+    didDrawPage: function () {
+      const pageNumber =
+        doc.internal.getNumberOfPages()
+
+      doc.setFontSize(8)
+      doc.setTextColor(120, 130, 140)
+
+      doc.text(
+        `Page ${pageNumber}`,
+        pageWidth - 10,
+        doc.internal.pageSize.getHeight() - 7,
+        { align: 'right' }
+      )
+    }
+  })
+
+  doc.save('snowball-transaction-report.pdf')
+}
 
     autoTable(doc, {
       startY: 28,
