@@ -846,6 +846,7 @@ function App() {
       })
 
      const mapped = raw.map(mapRow);
+      setMessage(`Excel rows read: ${raw.length} | Rows mapped: ${mapped.length}`)
 
       if (!mapped.length) {
         throw new Error(
