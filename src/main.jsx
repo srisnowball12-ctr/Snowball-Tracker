@@ -39,31 +39,40 @@ const norm = s =>
     .replace(/[^a-z0-9]/g, '')
 
 const iso = v => {
-  if (!v) return null
+  if (v === null || v === undefined || v === '') return null
 
-  if (v instanceof Date) {
-    const y = v.getFullYear()
-    const m = String(v.getMonth() + 1).padStart(2, '0')
-    const d = String(v.getDate()).padStart(2, '0')
+  // SheetJS can return Excel dates as Date objects. Read the
+  // calendar components directly so the date cannot move backward
+  // because of UTC/local-time conversion.
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    const y = v.getUTCFullYear()
+    const m = String(v.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(v.getUTCDate()).padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  if (typeof v === 'number') {
-    // Excel stores dates as serial numbers. Build the date from
-    // local calendar components so the transaction date never
-    // shifts by one day because of UTC conversion.
-    const excelEpoch = new Date(1899, 11, 30)
-    const d = new Date(excelEpoch.getTime() + v * 86400000)
+  // Excel serial date.
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    const wholeDays = Math.floor(v)
+    const d = new Date(excelEpoch.getTime() + wholeDays * 86400000)
 
-    const y = d.getFullYear()
-    const m = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
+    const y = d.getUTCFullYear()
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+    const day = String(d.getUTCDate()).padStart(2, '0')
 
     return `${y}-${m}-${day}`
   }
 
   const text = String(v).trim()
 
+  // ISO date/date-time: preserve the date portion exactly.
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY.
   const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
 
   if (match) {
@@ -85,6 +94,8 @@ const iso = v => {
     return null
   }
 
+  // For other date strings, use local calendar components rather than
+  // toISOString(), which can shift the date into the previous day.
   const d = new Date(text)
 
   if (Number.isNaN(d.getTime())) return null
@@ -95,7 +106,6 @@ const iso = v => {
 
   return `${y}-${m}-${day}`
 }
-
 function sourceLabel(value) {
   const text = String(value || '').toLowerCase()
   if (text.includes('swp') || text.includes('systematic withdrawal')) return 'SWP'
@@ -133,43 +143,64 @@ function classifyRows(rows) {
       )
     )
 
-    // Start from the conservative position:
-    // every non-explicit transaction is Redemption.
-    // Old database classifications are deliberately not reused here,
-    // otherwise historical false-positive SWPs would continue to show.
+    /*
+      Final classification rule:
+
+      1. Switch and STP are always retained as Switch/STP.
+      2. Red/Redemption and SWP are BOTH tested against the SWP pattern.
+      3. If the transaction belongs to a qualifying SWP sequence,
+         classify it as SWP, irrespective of the employee's source label.
+      4. If it does not qualify, classify it as Redemption.
+      5. A qualifying SWP sequence requires:
+         - same Investor + Folio + Scheme
+         - at least 3 consecutive eligible transactions
+         - 25–40 days between consecutive transactions
+         - amount variation <= 15%
+
+      This means employee classification is treated as input, not
+      as the final authority for Red vs SWP.
+    */
+
     items.forEach(row => {
       const explicit = explicitClassification(
         row.original_transaction_type
       )
 
-      row.display_classification = explicit || 'Redemption'
+      if (explicit === 'Switch' || explicit === 'STP') {
+        row.display_classification = explicit
+      } else {
+        // Both employee Red and employee SWP start as Redemption.
+        // The SWP-pattern test below is the final authority.
+        row.display_classification = 'Redemption'
+      }
     })
 
-    // Only non-explicit transactions are candidates for inferred SWP.
+    // Red/Redemption and SWP are both eligible for the SWP-pattern test.
+    // Switch and STP are deliberately excluded.
     const candidates = items
-      .map((row, index) => ({
-        row,
-        index,
-        date: new Date(`${row.transaction_date}T00:00:00`),
-        amount: Number(row.amount || 0),
-        explicit: explicitClassification(
-          row.original_transaction_type
-        )
-      }))
+      .map((row, index) => {
+        const source = sourceLabel(row.original_transaction_type)
+
+        return {
+          row,
+          index,
+          date: new Date(`${row.transaction_date}T00:00:00`),
+          amount: Number(row.amount || 0),
+          source
+        }
+      })
       .filter(item =>
-        !item.explicit &&
+        (item.source === 'Redemption' || item.source === 'SWP') &&
         !Number.isNaN(item.date.getTime()) &&
         Number.isFinite(item.amount) &&
         item.amount > 0
       )
 
-    // Genuine SWP rule:
-    // 1. Same Investor + Folio + Scheme (this group)
-    // 2. At least 3 consecutive withdrawals
-    // 3. Each gap is approximately one month: 25–40 days
-    // 4. Successive amounts are reasonably consistent: within 15%
-    //
-    // A one-off or occasional redemption must remain Redemption.
+    /*
+      Look for qualifying sequences among BOTH Red and SWP rows.
+      This is important because a single employee mistake must not
+      prevent the system from recognizing an otherwise valid SWP.
+    */
     for (let start = 0; start <= candidates.length - 3; start++) {
       const sequence = [candidates[start]]
 
