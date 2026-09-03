@@ -82,41 +82,11 @@ const iso = v => {
 }
 
 function sourceLabel(value) {
-  const text = String(value || '')
-    .trim()
-    .toLowerCase()
-
-  if (
-    text.includes('swp') ||
-    text.includes('systematic withdrawal')
-  ) {
-    return 'SWP'
-  }
-
-  if (
-    text.includes('switch') ||
-    text.includes('switch transaction') ||
-    text.includes('switch-in') ||
-    text.includes('switch-out')
-  ) {
-    return 'Switch'
-  }
-
-  if (
-    text.includes('stp') ||
-    text.includes('systematic transfer')
-  ) {
-    return 'STP'
-  }
-
-  if (
-    text.includes('red') ||
-    text.includes('redeem') ||
-    text.includes('redemption')
-  ) {
-    return 'Redemption'
-  }
-
+  const text = String(value || '').toLowerCase()
+  if (text.includes('swp') || text.includes('systematic withdrawal')) return 'SWP'
+  if (text.includes('switch')) return 'Switch'
+  if (text.includes('stp') || text.includes('systematic transfer')) return 'STP'
+  if (text.includes('red') || text.includes('redeem')) return 'Redemption'
   return value || 'Redemption'
 }
 
@@ -238,21 +208,13 @@ function mapRow(row) {
       ? amountRaw
       : Number(String(amountRaw || '').replace(/[₹,\s]/g, ''))
 
- const originalType =
-  get(
-    'Type',
-    'Transaction Type',
-    'Transaction Type Description',
-    'Txn Type',
-    'Txn Type Description',
-    'Nature of Transaction',
-    'Transaction Nature',
-    'Transaction Description',
-    'Description',
-    'Remarks',
-    'Source',
-    'original_transaction_type'
-  ) || null
+  const originalType =
+    get(
+      'Type',
+      'Transaction Type',
+      'Source',
+      'original_transaction_type'
+    ) || null
 
   return {
     rm_name: get(
@@ -284,7 +246,7 @@ function mapRow(row) {
     amount: Number.isFinite(amount) ? amount : null,
     original_transaction_type: sourceLabel(originalType),
     classified_transaction_type:
-      sourceLabel(originalType),
+      explicitClassification(originalType) || 'Redemption',
     classification_status: 'Completed',
     classification_reason: null
   }
@@ -884,7 +846,6 @@ function App() {
       })
 
      const mapped = raw.map(mapRow);
-      setMessage(`Excel rows read: ${raw.length} | Rows mapped: ${mapped.length}`)
 
       if (!mapped.length) {
         throw new Error(
@@ -913,17 +874,7 @@ function App() {
       setMessage(
         `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
       )
-const debug25Aug = analysed.filter(
-  r => r.transaction_date === '2026-08-25'
-)
 
-console.log('25-Aug rows being uploaded:', debug25Aug.length)
-console.log('25-Aug transaction types:', debug25Aug.map(r => ({
-  investor: r.investor_name,
-  amount: r.amount,
-  original: r.original_transaction_type,
-  classified: r.classified_transaction_type
-})))
       const { data, error: rpcError } = await supabase.rpc(
         'replace_transactions_for_dates',
         {
