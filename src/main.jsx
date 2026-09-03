@@ -284,7 +284,7 @@ function mapRow(row) {
     amount: Number.isFinite(amount) ? amount : null,
     original_transaction_type: sourceLabel(originalType),
     classified_transaction_type:
-      explicitClassification(originalType) || 'Redemption',
+      sourceLabel(originalType),
     classification_status: 'Completed',
     classification_reason: null
   }
