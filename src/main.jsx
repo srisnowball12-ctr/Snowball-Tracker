@@ -49,9 +49,17 @@ const iso = v => {
   }
 
   if (typeof v === 'number') {
-    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    // Excel stores dates as serial numbers. Build the date from
+    // local calendar components so the transaction date never
+    // shifts by one day because of UTC conversion.
+    const excelEpoch = new Date(1899, 11, 30)
     const d = new Date(excelEpoch.getTime() + v * 86400000)
-    return d.toISOString().slice(0, 10)
+
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+
+    return `${y}-${m}-${day}`
   }
 
   const text = String(v).trim()
@@ -78,7 +86,14 @@ const iso = v => {
   }
 
   const d = new Date(text)
-  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
+
+  if (Number.isNaN(d.getTime())) return null
+
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+
+  return `${y}-${m}-${day}`
 }
 
 function sourceLabel(value) {
@@ -853,13 +868,15 @@ function App() {
         )
       }
 
-    const analysed = mapped.map(row => ({
-  ...row,
-  classified_transaction_type:
-    row.original_transaction_type || 'Redemption',
-  classification_status: 'Completed',
-  classification_reason: null
-}))
+      const analysed = classifyRows(mapped).map(
+        ({ display_classification, ...row }) => ({
+          ...row,
+          classified_transaction_type:
+            display_classification || 'Redemption',
+          classification_status: 'Completed',
+          classification_reason: null
+        })
+      )
 
       const uploadDates = [
         ...new Set(
