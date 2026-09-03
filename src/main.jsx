@@ -82,11 +82,41 @@ const iso = v => {
 }
 
 function sourceLabel(value) {
-  const text = String(value || '').toLowerCase()
-  if (text.includes('swp') || text.includes('systematic withdrawal')) return 'SWP'
-  if (text.includes('switch')) return 'Switch'
-  if (text.includes('stp') || text.includes('systematic transfer')) return 'STP'
-  if (text.includes('red') || text.includes('redeem')) return 'Redemption'
+  const text = String(value || '')
+    .trim()
+    .toLowerCase()
+
+  if (
+    text.includes('swp') ||
+    text.includes('systematic withdrawal')
+  ) {
+    return 'SWP'
+  }
+
+  if (
+    text.includes('switch') ||
+    text.includes('switch transaction') ||
+    text.includes('switch-in') ||
+    text.includes('switch-out')
+  ) {
+    return 'Switch'
+  }
+
+  if (
+    text.includes('stp') ||
+    text.includes('systematic transfer')
+  ) {
+    return 'STP'
+  }
+
+  if (
+    text.includes('red') ||
+    text.includes('redeem') ||
+    text.includes('redemption')
+  ) {
+    return 'Redemption'
+  }
+
   return value || 'Redemption'
 }
 
@@ -208,13 +238,21 @@ function mapRow(row) {
       ? amountRaw
       : Number(String(amountRaw || '').replace(/[₹,\s]/g, ''))
 
-  const originalType =
-    get(
-      'Type',
-      'Transaction Type',
-      'Source',
-      'original_transaction_type'
-    ) || null
+ const originalType =
+  get(
+    'Type',
+    'Transaction Type',
+    'Transaction Type Description',
+    'Txn Type',
+    'Txn Type Description',
+    'Nature of Transaction',
+    'Transaction Nature',
+    'Transaction Description',
+    'Description',
+    'Remarks',
+    'Source',
+    'original_transaction_type'
+  ) || null
 
   return {
     rm_name: get(
