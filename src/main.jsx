@@ -853,15 +853,13 @@ function App() {
         )
       }
 
-      const analysed = classifyRows(mapped).map(
-        ({ display_classification, ...row }) => ({
-          ...row,
-          classified_transaction_type:
-            display_classification || 'Redemption',
-          classification_status: 'Completed',
-          classification_reason: null
-        })
-      )
+    const analysed = mapped.map(row => ({
+  ...row,
+  classified_transaction_type:
+    row.original_transaction_type || 'Redemption',
+  classification_status: 'Completed',
+  classification_reason: null
+}))
 
       const uploadDates = [
         ...new Set(
