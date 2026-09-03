@@ -824,90 +824,131 @@ function App() {
   )
 
   async function uploadFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const file = e.target.files?.[0]
+  if (!file) return
 
-    setUploading(true)
-    setError('')
-    setMessage('Reading and analysing Excel file...')
+  setUploading(true)
+  setError('')
+  setMessage('Reading and analysing Excel file...')
 
-    try {
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, {
-        type: 'array',
-        cellDates: true
+  try {
+    const buf = await file.arrayBuffer()
+
+    const wb = XLSX.read(buf, {
+      type: 'array',
+      cellDates: true,
+      raw: true
+    })
+
+    const ws = wb.Sheets[wb.SheetNames[0]]
+
+    const raw = XLSX.utils.sheet_to_json(ws, {
+      defval: null,
+      raw: true
+    })
+
+    /*
+      IMPORTANT:
+      Every Excel row is retained.
+      There is deliberately NO duplicate filtering.
+    */
+    const mapped = raw.map(mapRow)
+
+    const analysed = classifyRows(mapped).map(
+      ({ display_classification, ...row }) => ({
+        ...row,
+        classified_transaction_type:
+          display_classification || 'Redemption',
+        classification_status: 'Completed',
+        classification_reason: null
       })
+    )
 
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      const raw = XLSX.utils.sheet_to_json(ws, {
-        defval: null,
-        raw: false
-      })
+    /*
+      Only rows with a valid transaction date can be
+      sent to the date-replacement function.
+      Rows with a missing date cannot safely be uploaded.
+    */
+    const invalidRows = analysed.filter(
+      row =>
+        !row.investor_name ||
+        !row.transaction_date ||
+        row.amount == null
+    )
 
-     const mapped = raw.map(mapRow);
+    if (invalidRows.length > 0) {
+      throw new Error(
+        `Excel upload stopped: ${invalidRows.length} transaction row(s) have missing Investor, Date, or Amount. No data was changed.`
+      )
+    }
 
-      if (!mapped.length) {
-        throw new Error(
-          'No valid transactions found. Please use the normal Snowball transaction Excel format.'
-        )
+    if (!analysed.length) {
+      throw new Error(
+        'No transaction rows were found in the Excel file.'
+      )
+    }
+
+    const uploadDates = [
+      ...new Set(
+        analysed
+          .map(x => x.transaction_date)
+          .filter(Boolean)
+      )
+    ]
+
+    /*
+      Show the exact number of transactions being uploaded.
+    */
+    setMessage(
+      `Uploading ${analysed.length} transactions across ${uploadDates.length} date(s)...`
+    )
+
+    const { data, error: rpcError } = await supabase.rpc(
+      'replace_transactions_for_dates',
+      {
+        p_dates: uploadDates,
+        p_rows: analysed
       }
+    )
 
-      const analysed = classifyRows(mapped).map(
-        ({ display_classification, ...row }) => ({
-          ...row,
-          classified_transaction_type:
-            display_classification || 'Redemption',
-          classification_status: 'Completed',
-          classification_reason: null
-        })
+    if (rpcError) throw rpcError
+
+    const inserted = Number(
+      data?.inserted_transactions ?? 0
+    )
+
+    /*
+      HARD SAFETY CHECK:
+      If Excel has 21 rows, database must confirm 21 rows.
+      Otherwise the upload is treated as failed.
+    */
+    if (inserted !== analysed.length) {
+      throw new Error(
+        `Upload verification failed. Excel contained ${analysed.length} transactions but Supabase inserted ${inserted}. No partial upload should be accepted.`
       )
+    }
 
-      const uploadDates = [
-        ...new Set(
-          analysed
-            .map(x => x.transaction_date)
-            .filter(Boolean)
-        )
-      ]
+    await loadData()
+    await loadRms()
 
-      setMessage(
-        `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
-      )
+    await notify(
+      'Upload completed',
+      `${inserted} transactions updated across ${uploadDates.length} date(s). The latest uploaded data now replaces previous data for those dates.`
+    )
+  } catch (err) {
+    console.error(err)
 
-      const { data, error: rpcError } = await supabase.rpc(
-        'replace_transactions_for_dates',
-        {
-          p_dates: uploadDates,
-          p_rows: analysed
-        }
-      )
+    setError(
+      err?.message ||
+      'Upload failed. Please try again.'
+    )
 
-      if (rpcError) throw rpcError
-
-      const inserted = Number(
-        data?.inserted_transactions ?? analysed.length
-      )
-
-      if (inserted !== analysed.length) {
-        throw new Error(
-          `Upload verification failed. Excel contained ${analysed.length} valid transactions but ${inserted} were saved.`
-        )
-      }
-
-      await loadData()
-      await loadRms()
-
-      await notify(
-        'Upload completed',
-        `${inserted} transactions updated across ${uploadDates.length} date(s). The latest uploaded data now replaces previous data for those dates.`
-      )
-    } catch (err) {
-      console.error(err)
-      setError(err?.message || 'Upload failed. Please try again.')
-      setMessage('')
-    } finally {
-      setUploading(false)
-      e.target.value = ''
+    setMessage('')
+  } finally {
+    setUploading(false)
+    e.target.value = ''
+  }
+}
     }
   }
 
@@ -1669,13 +1710,8 @@ function App() {
 
                   <tbody>
                     {filtered.slice(0, 10).map(x => (
-                      <tr
-                        key={
-                          x.id ||
-                          `${x.investor_name}-${x.transaction_date}-${x.scheme}`
-                        }
-                      >
-                        <td>{x.transaction_date}</td>
+            <tr key={x.id}>          
+            <td>{x.transaction_date}</td>
                         <td>{x.rm_name}</td>
                         <td>{x.investor_name}</td>
                         <td>{x.scheme}</td>
@@ -1733,12 +1769,7 @@ function App() {
 
                 <tbody>
                   {paginatedRows.map(x => (
-                    <tr
-                      key={
-                        x.id ||
-                        `${x.investor_name}-${x.transaction_date}-${x.scheme}`
-                      }
-                    >
+                   <tr key={x.id}>
                       <td>{x.transaction_date}</td>
                       <td>{x.rm_name}</td>
                       <td>{x.investor_name}</td>
