@@ -174,88 +174,129 @@ function classifyRows(rows) {
   })
 
   groups.forEach(items => {
-    items.sort((a, b) =>
-      String(a.transaction_date || '').localeCompare(
+    items.sort((a, b) => {
+      const dateCompare = String(a.transaction_date || '').localeCompare(
         String(b.transaction_date || '')
       )
-    )
+
+      if (dateCompare !== 0) return dateCompare
+
+      return String(a.folio_no || '').localeCompare(
+        String(b.folio_no || '')
+      )
+    })
 
     /*
-      Final classification rule:
+      FINAL CLASSIFICATION LOGIC
 
-      1. Switch remains Switch.
-      2. STP remains STP.
-      3. Red and SWP are BOTH candidates for the SWP test.
-      4. A qualifying sequence becomes SWP even if employees entered Red.
-      5. A non-qualifying SWP becomes Redemption.
+      Switch and STP are fixed.
 
-      SWP test:
+      Red/Redemption and SWP are both tested by the system because
+      employee-entered classifications may be incorrect.
+
+      SWP pattern:
       - Same Investor + Folio + Scheme
-      - At least 3 transactions
-      - 25–40 days between successive transactions
-      - Amount difference <= 15%
-    */
-    items.forEach(row => {
-      const fixed = fixedClassification(
-        row.original_transaction_type
-      )
+      - At least 3 CONSECUTIVE transactions
+      - Each consecutive date gap is 25–40 days
+      - Each consecutive amount variation is <= 15%
 
+      IMPORTANT:
+      We do NOT skip a transaction when testing a sequence.
+      If the next transaction breaks the 25–40 day or <=15% rule,
+      that sequence stops. This prevents unrelated transactions
+      from being incorrectly joined together.
+
+      If a Red/Redemption transaction qualifies, it becomes SWP.
+      If an SWP transaction does not qualify, it becomes Redemption.
+    */
+
+    items.forEach(row => {
+      const fixed = fixedClassification(row.original_transaction_type)
       row.display_classification = fixed || 'Redemption'
     })
 
-    // Only Red/SWP rows are candidates for the SWP pattern.
-    // Switch/STP are intentionally excluded from the pattern test.
-    const candidates = items
-      .map(row => ({
-        row,
-        date: new Date(`${row.transaction_date}T00:00:00`),
-        amount: Number(row.amount || 0),
-        fixed: fixedClassification(
-          row.original_transaction_type
-        )
-      }))
-      .filter(item =>
-        !item.fixed &&
-        !Number.isNaN(item.date.getTime()) &&
-        Number.isFinite(item.amount) &&
-        item.amount > 0
-      )
+    for (let start = 0; start <= items.length - 3; start++) {
+      const first = items[start]
 
-    for (
-      let start = 0;
-      start <= candidates.length - 3;
-      start++
-    ) {
-      const sequence = [candidates[start]]
-
-      for (
-        let next = start + 1;
-        next < candidates.length;
-        next++
+      if (
+        fixedClassification(first.original_transaction_type) ||
+        !first.transaction_date ||
+        !Number.isFinite(Number(first.amount)) ||
+        Number(first.amount) <= 0
       ) {
-        const previous = sequence[sequence.length - 1]
-        const current = candidates[next]
-
-        const days = Math.round(
-          (current.date - previous.date) / 86400000
-        )
-
-        if (days < 25) continue
-        if (days > 40) break
-
-        const amountDiff =
-          Math.abs(current.amount - previous.amount) /
-          Math.max(previous.amount, current.amount, 1)
-
-        if (amountDiff > 0.15) break
-
-        sequence.push(current)
+        continue
       }
 
-      if (sequence.length >= 3) {
-        sequence.forEach(item => {
-          item.row.display_classification = 'SWP'
-        })
+      const firstDate = new Date(`${first.transaction_date}T00:00:00`)
+
+      if (Number.isNaN(firstDate.getTime())) continue
+
+      const sequence = [first]
+
+      for (let i = start + 1; i < items.length; i++) {
+        const previous = items[i - 1]
+        const current = items[i]
+
+        // Switch/STP or an invalid row breaks a consecutive SWP sequence.
+        if (
+          fixedClassification(previous.original_transaction_type) ||
+          fixedClassification(current.original_transaction_type)
+        ) {
+          break
+        }
+
+        if (
+          !previous.transaction_date ||
+          !current.transaction_date ||
+          !Number.isFinite(Number(previous.amount)) ||
+          !Number.isFinite(Number(current.amount)) ||
+          Number(previous.amount) <= 0 ||
+          Number(current.amount) <= 0
+        ) {
+          break
+        }
+
+        const previousDate = new Date(
+          `${previous.transaction_date}T00:00:00`
+        )
+        const currentDate = new Date(
+          `${current.transaction_date}T00:00:00`
+        )
+
+        if (
+          Number.isNaN(previousDate.getTime()) ||
+          Number.isNaN(currentDate.getTime())
+        ) {
+          break
+        }
+
+        const days = Math.round(
+          (currentDate - previousDate) / 86400000
+        )
+
+        // The transactions must be consecutive and 25–40 days apart.
+        if (days < 25 || days > 40) {
+          break
+        }
+
+        const previousAmount = Number(previous.amount)
+        const currentAmount = Number(current.amount)
+
+        const amountDiff =
+          Math.abs(currentAmount - previousAmount) /
+          Math.max(previousAmount, currentAmount, 1)
+
+        if (amountDiff > 0.15) {
+          break
+        }
+
+        sequence.push(current)
+
+        if (sequence.length >= 3) {
+          sequence.forEach(row => {
+            row.display_classification = 'SWP'
+          })
+        }
       }
     }
   })
