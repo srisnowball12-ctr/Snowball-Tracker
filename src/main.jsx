@@ -913,7 +913,17 @@ function App() {
       setMessage(
         `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
       )
+const debug25Aug = analysed.filter(
+  r => r.transaction_date === '2026-08-25'
+)
 
+console.log('25-Aug rows being uploaded:', debug25Aug.length)
+console.log('25-Aug transaction types:', debug25Aug.map(r => ({
+  investor: r.investor_name,
+  amount: r.amount,
+  original: r.original_transaction_type,
+  classified: r.classified_transaction_type
+})))
       const { data, error: rpcError } = await supabase.rpc(
         'replace_transactions_for_dates',
         {
