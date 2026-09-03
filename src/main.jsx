@@ -844,14 +844,7 @@ function App() {
         raw: false
       })
 
-      const mapped = raw
-        .map(mapRow)
-        .filter(
-          r =>
-            r.investor_name &&
-            r.transaction_date &&
-            r.amount != null
-        )
+     const mapped = raw.map(mapRow);
 
       if (!mapped.length) {
         throw new Error(
