@@ -39,46 +39,76 @@ const norm = s =>
     .replace(/[^a-z0-9]/g, '')
 
 const iso = v => {
-  if (!v) return null
+  if (v === null || v === undefined || v === '') return null
 
+  // XLSX with cellDates:true normally gives us a Date object.
+  // Use local calendar components so an Excel date such as 25-Aug
+  // never becomes 24-Aug because of UTC conversion.
   if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null
     const y = v.getFullYear()
     const m = String(v.getMonth() + 1).padStart(2, '0')
     const d = String(v.getDate()).padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  if (typeof v === 'number') {
-    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
-    const d = new Date(excelEpoch.getTime() + v * 86400000)
-    return d.toISOString().slice(0, 10)
+  // Excel serial date number. Work with the calendar date only.
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const wholeDays = Math.floor(v)
+    const excelEpoch = new Date(1899, 11, 30)
+    excelEpoch.setDate(excelEpoch.getDate() + wholeDays)
+    const y = excelEpoch.getFullYear()
+    const m = String(excelEpoch.getMonth() + 1).padStart(2, '0')
+    const d = String(excelEpoch.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
   }
 
   const text = String(v).trim()
 
-  const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
-
-  if (match) {
-    const [, day, month, year] = match
-    const dd = Number(day)
-    const mm = Number(month)
+  // YYYY-MM-DD (including timestamps beginning with this date).
+  const ymd = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (ymd) {
+    const [, year, month, day] = ymd
     const yyyy = Number(year)
-
-    const test = new Date(Date.UTC(yyyy, mm - 1, dd))
-
+    const mm = Number(month)
+    const dd = Number(day)
+    const test = new Date(yyyy, mm - 1, dd)
     if (
-      test.getUTCFullYear() === yyyy &&
-      test.getUTCMonth() === mm - 1 &&
-      test.getUTCDate() === dd
+      test.getFullYear() === yyyy &&
+      test.getMonth() === mm - 1 &&
+      test.getDate() === dd
     ) {
       return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
     }
-
     return null
   }
 
+  // Indian/common Excel text dates: DD/MM/YYYY or DD-MM-YYYY.
+  const dmy = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
+  if (dmy) {
+    const [, day, month, year] = dmy
+    const dd = Number(day)
+    const mm = Number(month)
+    const yyyy = Number(year)
+    const test = new Date(yyyy, mm - 1, dd)
+    if (
+      test.getFullYear() === yyyy &&
+      test.getMonth() === mm - 1 &&
+      test.getDate() === dd
+    ) {
+      return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+    }
+    return null
+  }
+
+  // Final fallback for other date strings, but still return the local
+  // calendar date rather than converting through UTC.
   const d = new Date(text)
-  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
+  if (Number.isNaN(d.getTime())) return null
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 function sourceLabel(value) {
@@ -100,6 +130,7 @@ function classifyRows(rows) {
   const output = rows.map(row => ({ ...row }))
   const groups = new Map()
 
+  // Group strictly by Investor + Folio + Scheme.
   output.forEach(row => {
     const key = [
       norm(row.investor_name),
@@ -118,72 +149,83 @@ function classifyRows(rows) {
       )
     )
 
-    // Start from the conservative position:
-    // every non-explicit transaction is Redemption.
-    // Old database classifications are deliberately not reused here,
-    // otherwise historical false-positive SWPs would continue to show.
+    // Start with the employee/source classification for Switch/STP.
+    // For Red/SWP, the system decides the final classification below.
     items.forEach(row => {
-      const explicit = explicitClassification(
-        row.original_transaction_type
-      )
-
-      row.display_classification = explicit || 'Redemption'
+      const label = sourceLabel(row.original_transaction_type)
+      row.display_classification =
+        label === 'Switch' || label === 'STP'
+          ? label
+          : 'Redemption'
     })
 
-    // Only non-explicit transactions are candidates for inferred SWP.
-    const candidates = items
-      .map((row, index) => ({
-        row,
-        index,
-        date: new Date(`${row.transaction_date}T00:00:00`),
-        amount: Number(row.amount || 0),
-        explicit: explicitClassification(
-          row.original_transaction_type
-        )
-      }))
-      .filter(item =>
-        !item.explicit &&
-        !Number.isNaN(item.date.getTime()) &&
-        Number.isFinite(item.amount) &&
-        item.amount > 0
+    // SWP analysis is performed on BOTH employee-marked Redemption and SWP.
+    // Switch and STP are deliberately excluded and also break a sequence.
+    const eligible = row => {
+      const label = sourceLabel(row.original_transaction_type)
+      const date = new Date(`${row.transaction_date}T00:00:00`)
+      const amount = Number(row.amount)
+
+      return (
+        (label === 'Redemption' || label === 'SWP') &&
+        !Number.isNaN(date.getTime()) &&
+        Number.isFinite(amount) &&
+        amount > 0
       )
+    }
 
-    // Genuine SWP rule:
-    // 1. Same Investor + Folio + Scheme (this group)
-    // 2. At least 3 consecutive withdrawals
-    // 3. Each gap is approximately one month: 25–40 days
-    // 4. Successive amounts are reasonably consistent: within 15%
-    //
-    // A one-off or occasional redemption must remain Redemption.
-    for (let start = 0; start <= candidates.length - 3; start++) {
-      const sequence = [candidates[start]]
+    // Find strict consecutive runs. We do NOT skip over a transaction.
+    // A qualifying run requires 3 or more consecutive Red/SWP rows where
+    // every adjacent pair is 25–40 days apart and within 15% in amount.
+    let run = []
 
-      for (let next = start + 1; next < candidates.length; next++) {
-        const previous = sequence[sequence.length - 1]
-        const current = candidates[next]
-
-        const days = Math.round(
-          (current.date - previous.date) / 86400000
-        )
-
-        if (days < 25) continue
-        if (days > 40) break
-
-        const amountDiff =
-          Math.abs(current.amount - previous.amount) /
-          Math.max(previous.amount, current.amount, 1)
-
-        if (amountDiff > 0.15) break
-
-        sequence.push(current)
-      }
-
-      if (sequence.length >= 3) {
-        sequence.forEach(item => {
-          item.row.display_classification = 'SWP'
+    const flushRun = () => {
+      if (run.length >= 3) {
+        run.forEach(row => {
+          row.display_classification = 'SWP'
         })
       }
+      run = []
     }
+
+    for (let i = 0; i < items.length; i++) {
+      const current = items[i]
+
+      if (!eligible(current)) {
+        flushRun()
+        continue
+      }
+
+      if (run.length === 0) {
+        run = [current]
+        continue
+      }
+
+      const previous = run[run.length - 1]
+      const previousDate = new Date(`${previous.transaction_date}T00:00:00`)
+      const currentDate = new Date(`${current.transaction_date}T00:00:00`)
+      const days = Math.round(
+        (currentDate - previousDate) / 86400000
+      )
+
+      const previousAmount = Number(previous.amount || 0)
+      const currentAmount = Number(current.amount || 0)
+      const amountDiff =
+        Math.abs(currentAmount - previousAmount) /
+        Math.max(previousAmount, currentAmount, 1)
+
+      if (days >= 25 && days <= 40 && amountDiff <= 0.15) {
+        run.push(current)
+      } else {
+        // The current row does not continue the SWP sequence.
+        // First close any already-qualified run, then start a new run
+        // with the current row so it can participate in a later sequence.
+        flushRun()
+        run = [current]
+      }
+    }
+
+    flushRun()
   })
 
   return output
@@ -212,6 +254,14 @@ function mapRow(row) {
     get(
       'Type',
       'Transaction Type',
+      'Transaction Type Description',
+      'Txn Type',
+      'Txn Type Description',
+      'Nature of Transaction',
+      'Transaction Nature',
+      'Transaction Description',
+      'Description',
+      'Remarks',
       'Source',
       'original_transaction_type'
     ) || null
