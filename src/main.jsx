@@ -39,39 +39,23 @@ const norm = s =>
     .replace(/[^a-z0-9]/g, '')
 
 const iso = v => {
-  if (v === null || v === undefined || v === '') return null
+  if (!v) return null
 
-  // SheetJS may return Excel dates as Date objects.
-  // Read the calendar date components directly; never use toISOString()
-  // for transaction dates because UTC conversion can move a date backwards.
-  if (v instanceof Date && !Number.isNaN(v.getTime())) {
-    const y = v.getUTCFullYear()
-    const m = String(v.getUTCMonth() + 1).padStart(2, '0')
-    const d = String(v.getUTCDate()).padStart(2, '0')
+  if (v instanceof Date) {
+    const y = v.getFullYear()
+    const m = String(v.getMonth() + 1).padStart(2, '0')
+    const d = String(v.getDate()).padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  // Excel serial date: convert directly to calendar components.
-  // This avoids any local-time/UTC date shift.
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    const parsed = XLSX.SSF.parse_date_code(v)
-
-    if (parsed) {
-      return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`
-    }
-
-    return null
+  if (typeof v === 'number') {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    const d = new Date(excelEpoch.getTime() + v * 86400000)
+    return d.toISOString().slice(0, 10)
   }
 
   const text = String(v).trim()
 
-  // ISO date or ISO date-time: preserve the date portion exactly.
-  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (isoMatch) {
-    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
-  }
-
-  // DD/MM/YYYY or DD-MM-YYYY.
   const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
 
   if (match) {
@@ -93,68 +77,22 @@ const iso = v => {
     return null
   }
 
-  // Last fallback: use local calendar components, not toISOString().
   const d = new Date(text)
-
-  if (Number.isNaN(d.getTime())) return null
-
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-
-  return `${y}-${m}-${day}`
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
 }
 
 function sourceLabel(value) {
-  const text = String(value || '').trim().toLowerCase()
-
-  if (
-    text.includes('swp') ||
-    text.includes('systematic withdrawal')
-  ) {
-    return 'SWP'
-  }
-
-  if (
-    text.includes('switch') ||
-    text.includes('switch transaction') ||
-    text.includes('switch-in') ||
-    text.includes('switch-out')
-  ) {
-    return 'Switch'
-  }
-
-  if (
-    text.includes('stp') ||
-    text.includes('systematic transfer')
-  ) {
-    return 'STP'
-  }
-
-  if (
-    text.includes('red') ||
-    text.includes('redeem') ||
-    text.includes('redemption')
-  ) {
-    return 'Redemption'
-  }
-
+  const text = String(value || '').toLowerCase()
+  if (text.includes('swp') || text.includes('systematic withdrawal')) return 'SWP'
+  if (text.includes('switch')) return 'Switch'
+  if (text.includes('stp') || text.includes('systematic transfer')) return 'STP'
+  if (text.includes('red') || text.includes('redeem')) return 'Redemption'
   return value || 'Redemption'
 }
 
-/*
-  Switch and STP are fixed classifications.
-
-  Redemption and SWP are deliberately NOT fixed because the employee's
-  classification can be wrong. Both must be tested against the SWP pattern.
-*/
-function fixedClassification(value) {
+function explicitClassification(value) {
   const label = sourceLabel(value)
-
-  if (label === 'Switch' || label === 'STP') {
-    return label
-  }
-
+  if (['SWP', 'Switch', 'STP'].includes(label)) return label
   return null
 }
 
@@ -174,129 +112,76 @@ function classifyRows(rows) {
   })
 
   groups.forEach(items => {
-    items.sort((a, b) => {
-      const dateCompare = String(a.transaction_date || '').localeCompare(
+    items.sort((a, b) =>
+      String(a.transaction_date || '').localeCompare(
         String(b.transaction_date || '')
       )
+    )
 
-      if (dateCompare !== 0) return dateCompare
-
-      return String(a.folio_no || '').localeCompare(
-        String(b.folio_no || '')
-      )
-    })
-
-    /*
-      FINAL CLASSIFICATION LOGIC
-
-      Switch and STP are fixed.
-
-      Red/Redemption and SWP are both tested by the system because
-      employee-entered classifications may be incorrect.
-
-      SWP pattern:
-      - Same Investor + Folio + Scheme
-      - At least 3 CONSECUTIVE transactions
-      - Each consecutive date gap is 25–40 days
-      - Each consecutive amount variation is <= 15%
-
-      IMPORTANT:
-      We do NOT skip a transaction when testing a sequence.
-      If the next transaction breaks the 25–40 day or <=15% rule,
-      that sequence stops. This prevents unrelated transactions
-      from being incorrectly joined together.
-
-      If a Red/Redemption transaction qualifies, it becomes SWP.
-      If an SWP transaction does not qualify, it becomes Redemption.
-    */
-
+    // Start from the conservative position:
+    // every non-explicit transaction is Redemption.
+    // Old database classifications are deliberately not reused here,
+    // otherwise historical false-positive SWPs would continue to show.
     items.forEach(row => {
-      const fixed = fixedClassification(row.original_transaction_type)
-      row.display_classification = fixed || 'Redemption'
+      const explicit = explicitClassification(
+        row.original_transaction_type
+      )
+
+      row.display_classification = explicit || 'Redemption'
     })
 
-    for (let start = 0; start <= items.length - 3; start++) {
-      const first = items[start]
-
-      if (
-        fixedClassification(first.original_transaction_type) ||
-        !first.transaction_date ||
-        !Number.isFinite(Number(first.amount)) ||
-        Number(first.amount) <= 0
-      ) {
-        continue
-      }
-
-      const firstDate = new Date(`${first.transaction_date}T00:00:00`)
-
-      if (Number.isNaN(firstDate.getTime())) continue
-
-      const sequence = [first]
-
-      for (let i = start + 1; i < items.length; i++) {
-        const previous = items[i - 1]
-        const current = items[i]
-
-        // Switch/STP or an invalid row breaks a consecutive SWP sequence.
-        if (
-          fixedClassification(previous.original_transaction_type) ||
-          fixedClassification(current.original_transaction_type)
-        ) {
-          break
-        }
-
-        if (
-          !previous.transaction_date ||
-          !current.transaction_date ||
-          !Number.isFinite(Number(previous.amount)) ||
-          !Number.isFinite(Number(current.amount)) ||
-          Number(previous.amount) <= 0 ||
-          Number(current.amount) <= 0
-        ) {
-          break
-        }
-
-        const previousDate = new Date(
-          `${previous.transaction_date}T00:00:00`
+    // Only non-explicit transactions are candidates for inferred SWP.
+    const candidates = items
+      .map((row, index) => ({
+        row,
+        index,
+        date: new Date(`${row.transaction_date}T00:00:00`),
+        amount: Number(row.amount || 0),
+        explicit: explicitClassification(
+          row.original_transaction_type
         )
-        const currentDate = new Date(
-          `${current.transaction_date}T00:00:00`
-        )
+      }))
+      .filter(item =>
+        !item.explicit &&
+        !Number.isNaN(item.date.getTime()) &&
+        Number.isFinite(item.amount) &&
+        item.amount > 0
+      )
 
-        if (
-          Number.isNaN(previousDate.getTime()) ||
-          Number.isNaN(currentDate.getTime())
-        ) {
-          break
-        }
+    // Genuine SWP rule:
+    // 1. Same Investor + Folio + Scheme (this group)
+    // 2. At least 3 consecutive withdrawals
+    // 3. Each gap is approximately one month: 25–40 days
+    // 4. Successive amounts are reasonably consistent: within 15%
+    //
+    // A one-off or occasional redemption must remain Redemption.
+    for (let start = 0; start <= candidates.length - 3; start++) {
+      const sequence = [candidates[start]]
+
+      for (let next = start + 1; next < candidates.length; next++) {
+        const previous = sequence[sequence.length - 1]
+        const current = candidates[next]
 
         const days = Math.round(
-          (currentDate - previousDate) / 86400000
+          (current.date - previous.date) / 86400000
         )
 
-        // The transactions must be consecutive and 25–40 days apart.
-        if (days < 25 || days > 40) {
-          break
-        }
-
-        const previousAmount = Number(previous.amount)
-        const currentAmount = Number(current.amount)
+        if (days < 25) continue
+        if (days > 40) break
 
         const amountDiff =
-          Math.abs(currentAmount - previousAmount) /
-          Math.max(previousAmount, currentAmount, 1)
+          Math.abs(current.amount - previous.amount) /
+          Math.max(previous.amount, current.amount, 1)
 
-        if (amountDiff > 0.15) {
-          break
-        }
+        if (amountDiff > 0.15) break
 
         sequence.push(current)
+      }
 
-        if (sequence.length >= 3) {
-          sequence.forEach(row => {
-            row.display_classification = 'SWP'
-          })
-        }
+      if (sequence.length >= 3) {
+        sequence.forEach(item => {
+          item.row.display_classification = 'SWP'
+        })
       }
     }
   })
@@ -315,31 +200,18 @@ function mapRow(row) {
       .find(v => v !== undefined && v !== null && v !== '')
 
   const amountRaw = get(
-    'Amount(₹)',
-    'Amount',
-    'amount',
-    'Transaction Amount'
+    'Amount(₹)', 'Amount', 'amount', 'Transaction Amount'
   )
 
   const amount =
     typeof amountRaw === 'number'
       ? amountRaw
-      : Number(
-          String(amountRaw || '').replace(/[₹,\s]/g, '')
-        )
+      : Number(String(amountRaw || '').replace(/[₹,\s]/g, ''))
 
   const originalType =
     get(
       'Type',
       'Transaction Type',
-      'Transaction Type Description',
-      'Txn Type',
-      'Txn Type Description',
-      'Nature of Transaction',
-      'Transaction Nature',
-      'Transaction Description',
-      'Description',
-      'Remarks',
       'Source',
       'original_transaction_type'
     ) || null
@@ -352,28 +224,16 @@ function mapRow(row) {
       'RM',
       'rm_name'
     ) || null,
-
-    group_name: get(
-      'Group',
-      'group_name'
-    ) || null,
-
+    group_name: get('Group', 'group_name') || null,
     investor_name: get(
       'Investor',
       'Investor Name',
       'Client Name',
       'investor_name'
     ) || null,
-
     transaction_date: iso(
-      get(
-        'Date',
-        'Redemption Date',
-        'Transaction Date',
-        'transaction_date'
-      )
+      get('Date', 'Redemption Date', 'Transaction Date', 'transaction_date')
     ),
-
     folio_no: String(
       get(
         'Folio No/Demat A/C',
@@ -382,20 +242,11 @@ function mapRow(row) {
         'folio_no'
       ) || ''
     ) || null,
-
-    scheme: get(
-      'Scheme',
-      'Fund',
-      'scheme'
-    ) || null,
-
+    scheme: get('Scheme', 'Fund', 'scheme') || null,
     amount: Number.isFinite(amount) ? amount : null,
-
     original_transaction_type: sourceLabel(originalType),
-
-    // This field is overwritten by classifyRows during upload.
-    classified_transaction_type: 'Redemption',
-
+    classified_transaction_type:
+      explicitClassification(originalType) || 'Redemption',
     classification_status: 'Completed',
     classification_reason: null
   }
@@ -984,7 +835,7 @@ function App() {
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(buf, {
         type: 'array',
-        cellDates: false,
+        cellDates: true,
         raw: true
       })
 
