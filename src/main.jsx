@@ -1351,6 +1351,10 @@ function App() {
         ) ||
         analysed.length >= 500
 
+      // Consolidated uploads replace all dates already present in the loaded
+      // dataset, plus all dates in the new Excel. Daily/partial uploads remain
+      // date-scoped.
+
       /*
         For the consolidated snapshot, include every date currently in the
         application dataset. The SQL RPC deletes those dates first and then
@@ -2045,16 +2049,6 @@ function App() {
               <RefreshCw
                 size={18}
               />
-            </button>
-
-            <button
-              className="logoutHeaderButton"
-              onClick={
-                handleLogout
-              }
-            >
-              <LogOut size={17} />
-              Logout
             </button>
 
             <div
