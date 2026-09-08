@@ -62,7 +62,7 @@ const iso = value => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     const excelEpoch = Date.UTC(1899, 11, 30)
     const wholeDays = Math.floor(value)
-    const d = new Date(excelEpoch + wholeDays * 86400000)
+    const d = new Date(excelEpoch + wholeDays * 886400000)
 
     return [
       d.getUTCFullYear(),
@@ -185,25 +185,44 @@ function classifyRows(rows) {
   const groups = new Map()
 
   /*
-    FINAL SWP RULE
-    --------------
-    - Folio is ignored completely.
-    - Group by Investor + Scheme.
-    - Switch and STP are always Switch/STP.
-    - If the employee/source says SWP, keep it as SWP. It may be checked
-      against the SWP pattern when history exists, but a failed check does
-      NOT convert an explicitly marked SWP into Redemption.
-    - If the employee/source says Redemption, it stays Redemption unless
-      there is previous SWP history for the same Investor + Scheme and the
-      current transaction completes a valid SWP pattern.
-    - A valid pattern is 3 consecutive eligible transactions, 25–40 days
-      apart, with each successive amount within 15% of the previous amount.
-    */
+    FINAL SWP CLASSIFICATION LOGIC
+
+    1. Folio number is completely ignored.
+    2. Group by Investor + Scheme only.
+    3. Switch and STP are always retained as Switch/STP.
+    4. An employee/source SWP remains SWP by default.
+    5. If an employee/source Redemption has established previous SWP history
+       for the same Investor + Scheme, test it against the recurring SWP
+       pattern and convert it to SWP only when the pattern is satisfied.
+    6. SWP pattern = 3 consecutive eligible transactions, each 25–40 days
+       apart, with each successive amount within 15%.
+    7. A reclassified Redemption becomes part of the SWP history for later
+       transactions.
+    8. No transaction is removed because of classification.
+
+    For rows already stored in Supabase, _historyClassification preserves the
+    classification previously established by the tracker. This allows a new
+    upload to use genuine historical SWP history without trusting Folio No.
+  */
+
   output.forEach(row => {
-    row.display_classification = 'Redemption'
+    const source = sourceLabel(row.original_transaction_type)
+    const history =
+      sourceLabel(row._historyClassification)
+
+    if (source === 'Switch') {
+      row.display_classification = 'Switch'
+    } else if (source === 'STP') {
+      row.display_classification = 'STP'
+    } else if (history === 'SWP') {
+      row.display_classification = 'SWP'
+    } else if (source === 'SWP') {
+      row.display_classification = 'SWP'
+    } else {
+      row.display_classification = 'Redemption'
+    }
   })
 
-  groups.clear()
   output.forEach(row => {
     const key = [
       norm(row.investor_name),
@@ -221,21 +240,11 @@ function classifyRows(rows) {
       )
     )
 
-    // Fixed classifications first. These are never reclassified as SWP.
-    items.forEach(row => {
-      const label = sourceLabel(row.original_transaction_type)
-
-      if (label === 'Switch') row.display_classification = 'Switch'
-      else if (label === 'STP') row.display_classification = 'STP'
-      else if (label === 'SWP') row.display_classification = 'SWP'
-      else row.display_classification = 'Redemption'
-    })
-
     const eligible = items
       .filter(row => {
-        const label = sourceLabel(row.original_transaction_type)
+        const source = sourceLabel(row.original_transaction_type)
         return (
-          (label === 'Redemption' || label === 'SWP') &&
+          (source === 'Redemption' || source === 'SWP') &&
           row.transaction_date &&
           Number.isFinite(Number(row.amount)) &&
           Number(row.amount) > 0
@@ -243,38 +252,38 @@ function classifyRows(rows) {
       })
       .map(row => ({
         row,
-        label: sourceLabel(row.original_transaction_type),
-        date: new Date(`${row.transaction_date}T00:00:00`),
+        source: sourceLabel(row.original_transaction_type),
+        date: new Date(`${row.transaction_date}T00:00:00Z`),
         amount: Number(row.amount)
       }))
       .filter(item => !Number.isNaN(item.date.getTime()))
 
-    /*
-      A transaction marked SWP is always retained as SWP. For Redemption
-      rows, only a sequence backed by previous SWP history can override the
-      employee label.
-    */
     for (let i = 0; i < eligible.length; i++) {
       const current = eligible[i]
 
-      if (current.label !== 'Redemption') continue
+      // Employee/source SWP always remains SWP.
+      if (current.source === 'SWP') {
+        current.row.display_classification = 'SWP'
+        continue
+      }
 
-      // Find a valid two-transaction SWP history immediately before the
-      // current Redemption. Because the sequence is consecutive, we do not
-      // skip an intervening eligible transaction.
+      // Employee/source Redemption needs previous SWP history.
       const previous = eligible[i - 1]
       const previousPrevious = eligible[i - 2]
 
       if (!previous || !previousPrevious) continue
-      if (previous.label !== 'SWP' && previousPrevious.label !== 'SWP') {
-        continue
-      }
+
+      const hasPreviousSwpHistory =
+        previous.row.display_classification === 'SWP' ||
+        previousPrevious.row.display_classification === 'SWP'
+
+      if (!hasPreviousSwpHistory) continue
 
       const days1 = Math.round(
-        (previous.date - previousPrevious.date) / 86400000
+        (previous.date - previousPrevious.date) / 886400000
       )
       const days2 = Math.round(
-        (current.date - previous.date) / 86400000
+        (current.date - previous.date) / 886400000
       )
 
       if (days1 < 25 || days1 > 40) continue
@@ -290,8 +299,6 @@ function classifyRows(rows) {
 
       if (diff1 > 0.15 || diff2 > 0.15) continue
 
-      // There is established SWP history and the current Redemption matches
-      // the recurring pattern, so the system overrides the employee label.
       current.row.display_classification = 'SWP'
     }
   })
@@ -1334,26 +1341,67 @@ function App() {
 
       /*
         IMPORTANT:
-        classifyRows() is run on every row before upload.
-        The database therefore receives the final classification, and the
-        dashboard simply displays that stored classification.
+        Classify the new upload WITH historical context.
+
+        The current database rows are used only as history. Existing rows
+        having one of the dates being replaced are excluded, because those
+        rows are about to be replaced by this Excel upload.
+
+        This is essential for the SWP rule: a new Redemption can only be
+        reclassified as SWP when the complete prior history is available.
       */
-      const analysed =
-        classifyRows(mapped).map(
-          ({
-            display_classification,
-            ...row
-          }) => ({
-            ...row,
-            classified_transaction_type:
-              display_classification ||
-              'Redemption',
-            classification_status:
-              'Completed',
-            classification_reason:
-              null
-          })
+      const uploadDateSet = new Set(
+        mapped
+          .map(row => row.transaction_date)
+          .filter(Boolean)
+      )
+
+      const historicalRows = rows
+        .filter(row =>
+          row.transaction_date &&
+          !uploadDateSet.has(row.transaction_date)
         )
+        .map(row => ({
+          ...row,
+          _historyClassification:
+            row.classified_transaction_type ||
+            row.display_classification ||
+            row.original_transaction_type
+        }))
+
+      const combinedForClassification = [
+        ...historicalRows,
+        ...mapped.map((row, index) => ({
+          ...row,
+          _uploadRowIndex: index
+        }))
+      ]
+
+      const classifiedCombined =
+        classifyRows(combinedForClassification)
+
+      const analysed =
+        classifiedCombined
+          .filter(row =>
+            Number.isInteger(row._uploadRowIndex)
+          )
+          .map(
+            ({
+              _uploadRowIndex,
+              _historyClassification,
+              display_classification,
+              ...row
+            }) => ({
+              ...row,
+              classified_transaction_type:
+                display_classification ||
+                'Redemption',
+              classification_status:
+                'Completed',
+              classification_reason:
+                null
+            })
+          )
 
       const uploadDates = [
         ...new Set(
