@@ -13,6 +13,18 @@ import {
 import logoUrl from './logo.png'
 import './styles.css'
 
+/*
+  FINAL CONSOLIDATED BUILD
+  - Excel calendar dates are preserved without timezone shifting.
+  - Consolidated uploads replace the existing dataset dates before inserting
+    every Excel row.
+  - SWP detection ignores Folio and uses Investor + Scheme.
+  - Employee Red/SWP labels are treated as inputs; the recurring SWP pattern
+    is the final authority for Red vs SWP.
+  - Switch and STP remain fixed classifications.
+  - Duplicate header Logout is removed; sidebar Logout remains.
+*/
+
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -1350,10 +1362,6 @@ function App() {
           'consolidated'
         ) ||
         analysed.length >= 500
-
-      // Consolidated uploads replace all dates already present in the loaded
-      // dataset, plus all dates in the new Excel. Daily/partial uploads remain
-      // date-scoped.
 
       /*
         For the consolidated snapshot, include every date currently in the
