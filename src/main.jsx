@@ -198,8 +198,10 @@ function classifyRows(rows) {
           (current.date.getTime() - previous.date.getTime()) / 86400000
         )
 
+        // The next eligible transaction must itself be 25-40 days
+        // after the previous one. Do not skip an intervening transaction.
         if (days < 25) {
-          continue
+          break
         }
 
         if (days > 40) {
@@ -881,16 +883,22 @@ function App() {
 
     try {
       const buf = await file.arrayBuffer()
+      /*
+        IMPORTANT DATE HANDLING:
+        Read the displayed Excel date instead of converting Excel date cells
+        to JavaScript Date objects. This prevents timezone conversion from
+        changing a transaction date such as 25-Aug into 24-Aug.
+      */
       const wb = XLSX.read(buf, {
         type: 'array',
-        cellDates: true,
-        raw: true
+        cellDates: false,
+        raw: false
       })
 
       const ws = wb.Sheets[wb.SheetNames[0]]
       const raw = XLSX.utils.sheet_to_json(ws, {
         defval: null,
-        raw: true
+        raw: false
       })
 
       // Remove only completely blank spreadsheet rows. Every row that
