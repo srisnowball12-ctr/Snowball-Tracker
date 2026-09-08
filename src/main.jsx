@@ -13,17 +13,7 @@ import {
 import logoUrl from './logo.png'
 import './styles.css'
 
-/*
-  FINAL CONSOLIDATED BUILD
-  - Excel calendar dates are preserved without timezone shifting.
-  - Consolidated uploads replace the existing dataset dates before inserting
-    every Excel row.
-  - SWP detection ignores Folio and uses Investor + Scheme.
-  - Employee Red/SWP labels are treated as inputs; the recurring SWP pattern
-    is the final authority for Red vs SWP.
-  - Switch and STP remain fixed classifications.
-  - Duplicate header Logout is removed; sidebar Logout remains.
-*/
+/* FINAL USER DISPLAY: show the user's name/surname instead of a single initial. */
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -180,14 +170,12 @@ function explicitClassification(value) {
   1. Folio number is completely ignored.
   2. Group by Investor + Scheme only.
   3. Switch and STP are always retained as their own classifications.
-  4. Both employee Red/Redemption and employee SWP rows are candidates.
-  5. A qualifying SWP sequence contains at least 3 eligible transactions.
-  6. Transactions must be consecutive eligible withdrawals in date order.
+  4. An employee/source SWP row remains SWP even when there is no history.
+  5. A Redemption row can become SWP only when previous SWP history exists.
+  6. The Redemption must complete a 3-transaction consecutive SWP pattern.
   7. Each consecutive gap must be 25–40 days.
   8. Successive amounts must be within 15%.
-  9. If a qualifying sequence is found, every transaction in that sequence
-     is classified as SWP, irrespective of the employee source label.
-  10. Otherwise the transaction remains Redemption.
+  9. Otherwise the Redemption remains Redemption.
 
   "Consecutive" is strict: a gap below 25 days or above 40 days breaks the
   sequence. We do not skip an intervening candidate transaction.
@@ -196,6 +184,26 @@ function classifyRows(rows) {
   const output = rows.map(row => ({ ...row }))
   const groups = new Map()
 
+  /*
+    FINAL SWP RULE
+    --------------
+    - Folio is ignored completely.
+    - Group by Investor + Scheme.
+    - Switch and STP are always Switch/STP.
+    - If the employee/source says SWP, keep it as SWP. It may be checked
+      against the SWP pattern when history exists, but a failed check does
+      NOT convert an explicitly marked SWP into Redemption.
+    - If the employee/source says Redemption, it stays Redemption unless
+      there is previous SWP history for the same Investor + Scheme and the
+      current transaction completes a valid SWP pattern.
+    - A valid pattern is 3 consecutive eligible transactions, 25–40 days
+      apart, with each successive amount within 15% of the previous amount.
+    */
+  output.forEach(row => {
+    row.display_classification = 'Redemption'
+  })
+
+  groups.clear()
   output.forEach(row => {
     const key = [
       norm(row.investor_name),
@@ -213,17 +221,17 @@ function classifyRows(rows) {
       )
     )
 
+    // Fixed classifications first. These are never reclassified as SWP.
     items.forEach(row => {
       const label = sourceLabel(row.original_transaction_type)
 
-      if (label === 'Switch' || label === 'STP') {
-        row.display_classification = label
-      } else {
-        row.display_classification = 'Redemption'
-      }
+      if (label === 'Switch') row.display_classification = 'Switch'
+      else if (label === 'STP') row.display_classification = 'STP'
+      else if (label === 'SWP') row.display_classification = 'SWP'
+      else row.display_classification = 'Redemption'
     })
 
-    const candidates = items
+    const eligible = items
       .filter(row => {
         const label = sourceLabel(row.original_transaction_type)
         return (
@@ -235,43 +243,56 @@ function classifyRows(rows) {
       })
       .map(row => ({
         row,
+        label: sourceLabel(row.original_transaction_type),
         date: new Date(`${row.transaction_date}T00:00:00`),
         amount: Number(row.amount)
       }))
       .filter(item => !Number.isNaN(item.date.getTime()))
 
-    for (let start = 0; start <= candidates.length - 3; start++) {
-      const sequence = [candidates[start]]
+    /*
+      A transaction marked SWP is always retained as SWP. For Redemption
+      rows, only a sequence backed by previous SWP history can override the
+      employee label.
+    */
+    for (let i = 0; i < eligible.length; i++) {
+      const current = eligible[i]
 
-      for (let next = start + 1; next < candidates.length; next++) {
-        const previous = sequence[sequence.length - 1]
-        const current = candidates[next]
+      if (current.label !== 'Redemption') continue
 
-        const days = Math.round(
-          (current.date - previous.date) / 86400000
-        )
+      // Find a valid two-transaction SWP history immediately before the
+      // current Redemption. Because the sequence is consecutive, we do not
+      // skip an intervening eligible transaction.
+      const previous = eligible[i - 1]
+      const previousPrevious = eligible[i - 2]
 
-        /*
-          Strict consecutive pattern:
-          any candidate inside the sequence must itself be 25–40 days
-          from the previous candidate.
-        */
-        if (days < 25 || days > 40) break
-
-        const amountDiff =
-          Math.abs(current.amount - previous.amount) /
-          Math.max(previous.amount, current.amount, 1)
-
-        if (amountDiff > 0.15) break
-
-        sequence.push(current)
+      if (!previous || !previousPrevious) continue
+      if (previous.label !== 'SWP' && previousPrevious.label !== 'SWP') {
+        continue
       }
 
-      if (sequence.length >= 3) {
-        sequence.forEach(item => {
-          item.row.display_classification = 'SWP'
-        })
-      }
+      const days1 = Math.round(
+        (previous.date - previousPrevious.date) / 86400000
+      )
+      const days2 = Math.round(
+        (current.date - previous.date) / 86400000
+      )
+
+      if (days1 < 25 || days1 > 40) continue
+      if (days2 < 25 || days2 > 40) continue
+
+      const diff1 =
+        Math.abs(previous.amount - previousPrevious.amount) /
+        Math.max(previous.amount, previousPrevious.amount, 1)
+
+      const diff2 =
+        Math.abs(current.amount - previous.amount) /
+        Math.max(current.amount, previous.amount, 1)
+
+      if (diff1 > 0.15 || diff2 > 0.15) continue
+
+      // There is established SWP history and the current Redemption matches
+      // the recurring pattern, so the system overrides the employee label.
+      current.row.display_classification = 'SWP'
     }
   })
 
@@ -1363,6 +1384,10 @@ function App() {
         ) ||
         analysed.length >= 500
 
+      // Consolidated uploads replace all dates already present in the loaded
+      // dataset, plus all dates in the new Excel. Daily/partial uploads remain
+      // date-scoped.
+
       /*
         For the consolidated snapshot, include every date currently in the
         application dataset. The SQL RPC deletes those dates first and then
@@ -2061,13 +2086,26 @@ function App() {
 
             <div
               className="userAvatar"
-              title={
-                session.user.email
-              }
+              title={session.user.email || ''}
             >
-              {session.user.email
-                ?.charAt(0)
-                .toUpperCase()}
+              {(() => {
+                const metadata = session.user.user_metadata || {}
+                const fullName =
+                  metadata.full_name ||
+                  metadata.name ||
+                  [metadata.first_name, metadata.last_name]
+                    .filter(Boolean)
+                    .join(' ')
+
+                if (fullName) return fullName
+
+                const emailName = String(session.user.email || '')
+                  .split('@')[0]
+                  .replace(/[._-]+/g, ' ')
+                  .trim()
+
+                return emailName || 'User'
+              })()}
             </div>
           </div>
         </header>
