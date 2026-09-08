@@ -120,16 +120,14 @@ function classifyRows(rows) {
 
   output.forEach(row => {
     const investor = norm(row.investor_name)
-    const folio = norm(row.folio_no)
     const scheme = norm(row.scheme)
 
     if (!investor || !scheme) return
 
-    // Folio is preferred. If folio is blank, use Investor + Scheme as
-    // the fallback so a blank folio does not prevent SWP detection.
-    const key = folio
-      ? `${investor}|folio:${folio}|${scheme}`
-      : `${investor}|no-folio|${scheme}`
+    // FINAL RULE: Folio number is deliberately ignored for SWP detection.
+    // The sequence is matched using Investor + Scheme only. This handles
+    // NJ files where folio values are blank or inconsistent across rows.
+    const key = `${investor}|${scheme}`
 
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(row)
@@ -178,7 +176,7 @@ function classifyRows(rows) {
     }))
 
     // A qualifying SWP sequence is 3 or more consecutive eligible
-    // transactions in the same Investor + Folio + Scheme group,
+    // transactions in the same Investor + Scheme group,
     // with 25-40 days between consecutive transactions and <=15%
     // variation in successive amounts.
     for (let start = 0; start <= candidates.length - 3; start++) {
