@@ -871,6 +871,32 @@ function App() {
     Math.ceil(filtered.length / pageSize)
   )
 
+  async function getAllExistingTransactionDates() {
+    const dates = new Set()
+    const batchSize = 1000
+    let fromRow = 0
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('transaction_date')
+        .not('transaction_date', 'is', null)
+        .range(fromRow, fromRow + batchSize - 1)
+
+      if (error) throw error
+
+      const batch = data || []
+      batch.forEach(row => {
+        if (row.transaction_date) dates.add(row.transaction_date)
+      })
+
+      if (batch.length < batchSize) break
+      fromRow += batchSize
+    }
+
+    return [...dates]
+  }
+
   async function uploadFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -881,11 +907,12 @@ function App() {
 
     try {
       const buf = await file.arrayBuffer()
+
       /*
-        IMPORTANT DATE HANDLING:
-        Read the displayed Excel date instead of converting Excel date cells
-        to JavaScript Date objects. This prevents timezone conversion from
-        changing a transaction date such as 25-Aug into 24-Aug.
+        FINAL DATE HANDLING:
+        Read Excel dates as displayed values instead of JavaScript Date
+        objects. This prevents timezone conversion from changing 25-Aug
+        into 24-Aug (and 1-Apr into 31-Mar).
       */
       const wb = XLSX.read(buf, {
         type: 'array',
@@ -899,9 +926,11 @@ function App() {
         raw: false
       })
 
-      // Remove only completely blank spreadsheet rows. Every row that
-      // contains any transaction data is retained; there is no duplicate
-      // filtering and no row-number based filtering.
+      /*
+        FINAL ROW PRESERVATION:
+        Keep every non-empty spreadsheet row. There is no duplicate
+        filtering and no row-number based filtering.
+      */
       const dataRows = raw
         .map((row, index) => ({ ...row, _excel_row: index + 2 }))
         .filter(row =>
@@ -921,11 +950,11 @@ function App() {
 
       const mapped = dataRows.map(mapRow)
 
-      // Date and amount are the minimum fields required for a transaction
-      // to be safely stored. Do not silently drop rows. Report their Excel
-      // row numbers instead so the problem can be corrected transparently.
       const invalidRows = mapped.filter(row =>
-        !row.transaction_date || row.amount == null || !Number.isFinite(Number(row.amount))
+        !row.investor_name ||
+        !row.transaction_date ||
+        row.amount == null ||
+        !Number.isFinite(Number(row.amount))
       )
 
       if (invalidRows.length > 0) {
@@ -935,7 +964,7 @@ function App() {
           .join(', ')
 
         throw new Error(
-          `Excel upload stopped: ${invalidRows.length} transaction row(s) have an invalid Date or Amount. Excel row(s): ${rowNumbers || 'unknown'}. No data was changed.`
+          `Excel upload stopped: ${invalidRows.length} transaction row(s) have missing Investor, Date, or Amount. Excel row(s): ${rowNumbers || 'unknown'}. No data was changed.`
         )
       }
 
@@ -963,6 +992,31 @@ function App() {
         )
       ]
 
+      /*
+        FINAL CONSOLIDATED-FILE HANDLING:
+        A consolidated Snowball/NJ file is a complete replacement of the
+        period represented by the file. The existing RPC replaces data by
+        date, so for a consolidated file we pass the UNION of existing DB
+        dates and uploaded dates. This removes stale dates that are not in
+        the new consolidated file and prevents the database returning to an
+        old larger total (for example 3,271 instead of 2,438).
+
+        Daily/partial files continue to use date-only replacement, so future
+        daily uploads do not wipe historical data.
+      */
+      const normalizedFileName = String(file.name || '').toLowerCase()
+      const isConsolidatedFile =
+        normalizedFileName.includes('conso') ||
+        normalizedFileName.includes('consolidated') ||
+        analysed.length >= 500
+
+      let datesToReplace = uploadDates
+
+      if (isConsolidatedFile) {
+        const existingDates = await getAllExistingTransactionDates()
+        datesToReplace = [...new Set([...existingDates, ...uploadDates])]
+      }
+
       setMessage(
         `Uploading ${analysed.length} transactions across ${uploadDates.length} date(s)...`
       )
@@ -970,24 +1024,20 @@ function App() {
       const { data, error: rpcError } = await supabase.rpc(
         'replace_transactions_for_dates',
         {
-          p_dates: uploadDates,
+          p_dates: datesToReplace,
           p_rows: analysed
         }
       )
 
       if (rpcError) throw rpcError
 
-      // The PostgreSQL RPC performs the authoritative inserted-row safety
-      // check. Do not run a second client-side date count query here because
-      // normal table reads can be restricted by RLS and produce false
-      // mismatches even when the SECURITY DEFINER RPC inserted all rows.
       const inserted = Number(
         data?.inserted_transactions ?? 0
       )
 
       if (inserted !== analysed.length) {
         throw new Error(
-          `Upload verification failed. Excel contained ${analysed.length} transactions but Supabase inserted ${inserted}.`
+          `Upload verification failed. Excel contained ${analysed.length} transactions but Supabase inserted ${inserted}. No partial upload should be accepted.`
         )
       }
 
