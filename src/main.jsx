@@ -39,31 +39,44 @@ const norm = s =>
     .replace(/[^a-z0-9]/g, '')
 
 const iso = v => {
-  if (!v) return null
+  if (v === null || v === undefined || v === '') return null
 
-  if (v instanceof Date) {
+  // SheetJS may return Excel dates as Date objects. Read the calendar
+  // components directly so the displayed transaction date never moves
+  // backward because of UTC/local-time conversion.
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
     const y = v.getFullYear()
     const m = String(v.getMonth() + 1).padStart(2, '0')
     const d = String(v.getDate()).padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  if (typeof v === 'number') {
+  // Excel serial date.
+  if (typeof v === 'number' && Number.isFinite(v)) {
     const excelEpoch = new Date(Date.UTC(1899, 11, 30))
-    const d = new Date(excelEpoch.getTime() + v * 86400000)
-    return d.toISOString().slice(0, 10)
+    const wholeDays = Math.floor(v)
+    const d = new Date(excelEpoch.getTime() + wholeDays * 86400000)
+    const y = d.getUTCFullYear()
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+    const day = String(d.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
   }
 
   const text = String(v).trim()
 
-  const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
+  // ISO date/date-time: preserve the date portion exactly.
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+  }
 
+  // DD/MM/YYYY or DD-MM-YYYY.
+  const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
   if (match) {
     const [, day, month, year] = match
     const dd = Number(day)
     const mm = Number(month)
     const yyyy = Number(year)
-
     const test = new Date(Date.UTC(yyyy, mm - 1, dd))
 
     if (
@@ -73,12 +86,17 @@ const iso = v => {
     ) {
       return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
     }
-
     return null
   }
 
+  // For other date strings, use local calendar components rather than
+  // toISOString(), which can shift the date into the previous day.
   const d = new Date(text)
-  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
+  if (Number.isNaN(d.getTime())) return null
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 function sourceLabel(value) {
@@ -107,9 +125,8 @@ function classifyRows(rows) {
 
     if (!investor || !scheme) return
 
-    // Folio is the preferred identifier. When the source Excel has no
-    // folio, use Investor + Scheme as the safe fallback rather than
-    // grouping unrelated investors together.
+    // Folio is preferred. If folio is blank, use Investor + Scheme as
+    // the fallback so a blank folio does not prevent SWP detection.
     const key = folio
       ? `${investor}|folio:${folio}|${scheme}`
       : `${investor}|no-folio|${scheme}`
@@ -118,7 +135,7 @@ function classifyRows(rows) {
     groups.get(key).push(row)
   })
 
-  const parseLocalDate = value => {
+  const parseDate = value => {
     if (!value) return null
     const parts = String(value).split('-').map(Number)
     if (parts.length !== 3 || parts.some(Number.isNaN)) return null
@@ -126,14 +143,16 @@ function classifyRows(rows) {
   }
 
   groups.forEach(items => {
-    items.sort((a, b) =>
-      String(a.transaction_date || '').localeCompare(
+    items.sort((a, b) => {
+      const dateCompare = String(a.transaction_date || '').localeCompare(
         String(b.transaction_date || '')
       )
-    )
+      if (dateCompare !== 0) return dateCompare
+      return Number(a._excel_row || 0) - Number(b._excel_row || 0)
+    })
 
-    // Start from the source classification, but Red/SWP are only
-    // provisional. The SWP pattern below is the final authority.
+    // Switch and STP are always fixed classifications.
+    // Red and SWP are provisional and are both tested below.
     items.forEach(row => {
       const label = sourceLabel(row.original_transaction_type)
       row.display_classification =
@@ -142,42 +161,48 @@ function classifyRows(rows) {
           : 'Redemption'
     })
 
-    // Test BOTH employee-marked Redemption and employee-marked SWP.
-    // Switch/STP rows are deliberately not eligible for an SWP sequence.
-    const eligible = items.map(row => ({
+    // Both employee-marked Red and SWP rows are eligible for the
+    // pattern test. Switch/STP rows are never candidates.
+    const candidates = items.filter(row => {
+      const source = sourceLabel(row.original_transaction_type)
+      return (
+        (source === 'Redemption' || source === 'SWP') &&
+        row.transaction_date &&
+        Number.isFinite(Number(row.amount)) &&
+        Number(row.amount) > 0
+      )
+    }).map(row => ({
       row,
-      label: sourceLabel(row.original_transaction_type),
-      date: parseLocalDate(row.transaction_date),
+      date: parseDate(row.transaction_date),
       amount: Number(row.amount)
     }))
 
-    // Every qualifying SWP sequence must contain 3 CONSECUTIVE rows
-    // in the Investor + Folio + Scheme group. We do not skip Switch,
-    // STP, bad dates, or other intervening transactions.
-    for (let start = 0; start <= eligible.length - 3; start++) {
-      const sequence = eligible.slice(start, start + 3)
-
-      if (sequence.some(item =>
-        !['Redemption', 'SWP'].includes(item.label) ||
-        !item.date ||
-        !Number.isFinite(item.amount) ||
-        item.amount <= 0
-      )) {
-        continue
-      }
-
+    // A qualifying SWP sequence is 3 or more consecutive eligible
+    // transactions in the same Investor + Folio + Scheme group,
+    // with 25-40 days between consecutive transactions and <=15%
+    // variation in successive amounts.
+    for (let start = 0; start <= candidates.length - 3; start++) {
+      const sequence = [candidates[start]]
       let qualifies = true
 
-      for (let i = 1; i < sequence.length; i++) {
-        const previous = sequence[i - 1]
-        const current = sequence[i]
+      for (let next = start + 1; next < candidates.length; next++) {
+        const previous = sequence[sequence.length - 1]
+        const current = candidates[next]
+
+        if (!current.date || !previous.date) {
+          qualifies = false
+          break
+        }
 
         const days = Math.round(
           (current.date.getTime() - previous.date.getTime()) / 86400000
         )
 
-        if (days < 25 || days > 40) {
-          qualifies = false
+        if (days < 25) {
+          continue
+        }
+
+        if (days > 40) {
           break
         }
 
@@ -186,12 +211,13 @@ function classifyRows(rows) {
           Math.max(previous.amount, current.amount, 1)
 
         if (amountDiff > 0.15) {
-          qualifies = false
           break
         }
+
+        sequence.push(current)
       }
 
-      if (qualifies) {
+      if (qualifies && sequence.length >= 3) {
         sequence.forEach(item => {
           item.row.display_classification = 'SWP'
         })
@@ -269,7 +295,8 @@ function mapRow(row) {
     classified_transaction_type:
       explicitClassification(originalType) || 'Redemption',
     classification_status: 'Completed',
-    classification_reason: null
+    classification_reason: null,
+    _excel_row: row._excel_row || null
   }
 }
 
@@ -866,29 +893,48 @@ function App() {
         raw: true
       })
 
-      // Ignore completely blank Excel rows, but never silently discard a
-      // transaction row that contains transaction data. This is important
-      // for files that have formatting/blank rows at the end of the sheet.
-      const dataRows = raw.filter(row =>
-        Object.values(row).some(
-          value => value !== null && value !== undefined && String(value).trim() !== ''
+      // Remove only completely blank spreadsheet rows. Every row that
+      // contains any transaction data is retained; there is no duplicate
+      // filtering and no row-number based filtering.
+      const dataRows = raw
+        .map((row, index) => ({ ...row, _excel_row: index + 2 }))
+        .filter(row =>
+          Object.entries(row).some(([key, value]) =>
+            key !== '_excel_row' &&
+            value !== null &&
+            value !== undefined &&
+            String(value).trim() !== ''
+          )
         )
-      )
 
-      const mapped = dataRows.map(mapRow).filter(row =>
-        row.investor_name &&
-        row.transaction_date &&
-        row.amount != null
-      )
-
-      if (!mapped.length) {
+      if (!dataRows.length) {
         throw new Error(
-          'No valid transactions found. Please use the normal Snowball transaction Excel format.'
+          'No transaction rows were found in the Excel file.'
+        )
+      }
+
+      const mapped = dataRows.map(mapRow)
+
+      // Date and amount are the minimum fields required for a transaction
+      // to be safely stored. Do not silently drop rows. Report their Excel
+      // row numbers instead so the problem can be corrected transparently.
+      const invalidRows = mapped.filter(row =>
+        !row.transaction_date || row.amount == null || !Number.isFinite(Number(row.amount))
+      )
+
+      if (invalidRows.length > 0) {
+        const rowNumbers = invalidRows
+          .map(row => row._excel_row)
+          .filter(Boolean)
+          .join(', ')
+
+        throw new Error(
+          `Excel upload stopped: ${invalidRows.length} transaction row(s) have an invalid Date or Amount. Excel row(s): ${rowNumbers || 'unknown'}. No data was changed.`
         )
       }
 
       const analysed = classifyRows(mapped).map(
-        ({ display_classification, ...row }) => ({
+        ({ display_classification, _excel_row, ...row }) => ({
           ...row,
           classified_transaction_type:
             display_classification || 'Redemption',
@@ -896,6 +942,12 @@ function App() {
           classification_reason: null
         })
       )
+
+      if (!analysed.length) {
+        throw new Error(
+          'No transaction rows were found in the Excel file.'
+        )
+      }
 
       const uploadDates = [
         ...new Set(
@@ -919,48 +971,18 @@ function App() {
 
       if (rpcError) throw rpcError
 
+      // The PostgreSQL RPC performs the authoritative inserted-row safety
+      // check. Do not run a second client-side date count query here because
+      // normal table reads can be restricted by RLS and produce false
+      // mismatches even when the SECURITY DEFINER RPC inserted all rows.
       const inserted = Number(
-        data?.inserted_transactions ?? analysed.length
+        data?.inserted_transactions ?? 0
       )
 
       if (inserted !== analysed.length) {
         throw new Error(
-          `Upload verification failed. Excel contained ${analysed.length} valid transactions but ${inserted} were saved.`
+          `Upload verification failed. Excel contained ${analysed.length} transactions but Supabase inserted ${inserted}.`
         )
-      }
-
-      // Verify the actual database count for every uploaded date. This
-      // catches any future issue where a source row is lost during upload.
-      const { data: dateCounts, error: verifyError } = await supabase
-        .from('transactions')
-        .select('transaction_date')
-        .in('transaction_date', uploadDates)
-
-      if (verifyError) throw verifyError
-
-      const expectedByDate = new Map()
-      analysed.forEach(row => {
-        expectedByDate.set(
-          row.transaction_date,
-          (expectedByDate.get(row.transaction_date) || 0) + 1
-        )
-      })
-
-      const actualByDate = new Map()
-      ;(dateCounts || []).forEach(row => {
-        actualByDate.set(
-          row.transaction_date,
-          (actualByDate.get(row.transaction_date) || 0) + 1
-        )
-      })
-
-      for (const [date, expected] of expectedByDate.entries()) {
-        const actual = actualByDate.get(date) || 0
-        if (actual !== expected) {
-          throw new Error(
-            `Upload verification failed for ${date}: Excel has ${expected} transactions but the database has ${actual}.`
-          )
-        }
       }
 
       await loadData()
