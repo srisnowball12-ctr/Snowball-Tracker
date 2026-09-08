@@ -39,76 +39,46 @@ const norm = s =>
     .replace(/[^a-z0-9]/g, '')
 
 const iso = v => {
-  if (v === null || v === undefined || v === '') return null
+  if (!v) return null
 
-  // XLSX with cellDates:true normally gives us a Date object.
-  // Use local calendar components so an Excel date such as 25-Aug
-  // never becomes 24-Aug because of UTC conversion.
   if (v instanceof Date) {
-    if (Number.isNaN(v.getTime())) return null
     const y = v.getFullYear()
     const m = String(v.getMonth() + 1).padStart(2, '0')
     const d = String(v.getDate()).padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  // Excel serial date number. Work with the calendar date only.
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    const wholeDays = Math.floor(v)
-    const excelEpoch = new Date(1899, 11, 30)
-    excelEpoch.setDate(excelEpoch.getDate() + wholeDays)
-    const y = excelEpoch.getFullYear()
-    const m = String(excelEpoch.getMonth() + 1).padStart(2, '0')
-    const d = String(excelEpoch.getDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
+  if (typeof v === 'number') {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    const d = new Date(excelEpoch.getTime() + v * 86400000)
+    return d.toISOString().slice(0, 10)
   }
 
   const text = String(v).trim()
 
-  // YYYY-MM-DD (including timestamps beginning with this date).
-  const ymd = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  if (ymd) {
-    const [, year, month, day] = ymd
-    const yyyy = Number(year)
-    const mm = Number(month)
-    const dd = Number(day)
-    const test = new Date(yyyy, mm - 1, dd)
-    if (
-      test.getFullYear() === yyyy &&
-      test.getMonth() === mm - 1 &&
-      test.getDate() === dd
-    ) {
-      return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
-    }
-    return null
-  }
+  const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
 
-  // Indian/common Excel text dates: DD/MM/YYYY or DD-MM-YYYY.
-  const dmy = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/)
-  if (dmy) {
-    const [, day, month, year] = dmy
+  if (match) {
+    const [, day, month, year] = match
     const dd = Number(day)
     const mm = Number(month)
     const yyyy = Number(year)
-    const test = new Date(yyyy, mm - 1, dd)
+
+    const test = new Date(Date.UTC(yyyy, mm - 1, dd))
+
     if (
-      test.getFullYear() === yyyy &&
-      test.getMonth() === mm - 1 &&
-      test.getDate() === dd
+      test.getUTCFullYear() === yyyy &&
+      test.getUTCMonth() === mm - 1 &&
+      test.getUTCDate() === dd
     ) {
       return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
     }
+
     return null
   }
 
-  // Final fallback for other date strings, but still return the local
-  // calendar date rather than converting through UTC.
   const d = new Date(text)
-  if (Number.isNaN(d.getTime())) return null
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
 }
 
 function sourceLabel(value) {
@@ -130,17 +100,30 @@ function classifyRows(rows) {
   const output = rows.map(row => ({ ...row }))
   const groups = new Map()
 
-  // Group strictly by Investor + Folio + Scheme.
   output.forEach(row => {
-    const key = [
-      norm(row.investor_name),
-      norm(row.folio_no),
-      norm(row.scheme)
-    ].join('|')
+    const investor = norm(row.investor_name)
+    const folio = norm(row.folio_no)
+    const scheme = norm(row.scheme)
+
+    if (!investor || !scheme) return
+
+    // Folio is the preferred identifier. When the source Excel has no
+    // folio, use Investor + Scheme as the safe fallback rather than
+    // grouping unrelated investors together.
+    const key = folio
+      ? `${investor}|folio:${folio}|${scheme}`
+      : `${investor}|no-folio|${scheme}`
 
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(row)
   })
+
+  const parseLocalDate = value => {
+    if (!value) return null
+    const parts = String(value).split('-').map(Number)
+    if (parts.length !== 3 || parts.some(Number.isNaN)) return null
+    return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]))
+  }
 
   groups.forEach(items => {
     items.sort((a, b) =>
@@ -149,8 +132,8 @@ function classifyRows(rows) {
       )
     )
 
-    // Start with the employee/source classification for Switch/STP.
-    // For Red/SWP, the system decides the final classification below.
+    // Start from the source classification, but Red/SWP are only
+    // provisional. The SWP pattern below is the final authority.
     items.forEach(row => {
       const label = sourceLabel(row.original_transaction_type)
       row.display_classification =
@@ -159,73 +142,61 @@ function classifyRows(rows) {
           : 'Redemption'
     })
 
-    // SWP analysis is performed on BOTH employee-marked Redemption and SWP.
-    // Switch and STP are deliberately excluded and also break a sequence.
-    const eligible = row => {
-      const label = sourceLabel(row.original_transaction_type)
-      const date = new Date(`${row.transaction_date}T00:00:00`)
-      const amount = Number(row.amount)
+    // Test BOTH employee-marked Redemption and employee-marked SWP.
+    // Switch/STP rows are deliberately not eligible for an SWP sequence.
+    const eligible = items.map(row => ({
+      row,
+      label: sourceLabel(row.original_transaction_type),
+      date: parseLocalDate(row.transaction_date),
+      amount: Number(row.amount)
+    }))
 
-      return (
-        (label === 'Redemption' || label === 'SWP') &&
-        !Number.isNaN(date.getTime()) &&
-        Number.isFinite(amount) &&
-        amount > 0
-      )
-    }
+    // Every qualifying SWP sequence must contain 3 CONSECUTIVE rows
+    // in the Investor + Folio + Scheme group. We do not skip Switch,
+    // STP, bad dates, or other intervening transactions.
+    for (let start = 0; start <= eligible.length - 3; start++) {
+      const sequence = eligible.slice(start, start + 3)
 
-    // Find strict consecutive runs. We do NOT skip over a transaction.
-    // A qualifying run requires 3 or more consecutive Red/SWP rows where
-    // every adjacent pair is 25–40 days apart and within 15% in amount.
-    let run = []
+      if (sequence.some(item =>
+        !['Redemption', 'SWP'].includes(item.label) ||
+        !item.date ||
+        !Number.isFinite(item.amount) ||
+        item.amount <= 0
+      )) {
+        continue
+      }
 
-    const flushRun = () => {
-      if (run.length >= 3) {
-        run.forEach(row => {
-          row.display_classification = 'SWP'
+      let qualifies = true
+
+      for (let i = 1; i < sequence.length; i++) {
+        const previous = sequence[i - 1]
+        const current = sequence[i]
+
+        const days = Math.round(
+          (current.date.getTime() - previous.date.getTime()) / 86400000
+        )
+
+        if (days < 25 || days > 40) {
+          qualifies = false
+          break
+        }
+
+        const amountDiff =
+          Math.abs(current.amount - previous.amount) /
+          Math.max(previous.amount, current.amount, 1)
+
+        if (amountDiff > 0.15) {
+          qualifies = false
+          break
+        }
+      }
+
+      if (qualifies) {
+        sequence.forEach(item => {
+          item.row.display_classification = 'SWP'
         })
       }
-      run = []
     }
-
-    for (let i = 0; i < items.length; i++) {
-      const current = items[i]
-
-      if (!eligible(current)) {
-        flushRun()
-        continue
-      }
-
-      if (run.length === 0) {
-        run = [current]
-        continue
-      }
-
-      const previous = run[run.length - 1]
-      const previousDate = new Date(`${previous.transaction_date}T00:00:00`)
-      const currentDate = new Date(`${current.transaction_date}T00:00:00`)
-      const days = Math.round(
-        (currentDate - previousDate) / 86400000
-      )
-
-      const previousAmount = Number(previous.amount || 0)
-      const currentAmount = Number(current.amount || 0)
-      const amountDiff =
-        Math.abs(currentAmount - previousAmount) /
-        Math.max(previousAmount, currentAmount, 1)
-
-      if (days >= 25 && days <= 40 && amountDiff <= 0.15) {
-        run.push(current)
-      } else {
-        // The current row does not continue the SWP sequence.
-        // First close any already-qualified run, then start a new run
-        // with the current row so it can participate in a later sequence.
-        flushRun()
-        run = [current]
-      }
-    }
-
-    flushRun()
   })
 
   return output
@@ -895,7 +866,20 @@ function App() {
         raw: true
       })
 
-     const mapped = raw.map(mapRow);
+      // Ignore completely blank Excel rows, but never silently discard a
+      // transaction row that contains transaction data. This is important
+      // for files that have formatting/blank rows at the end of the sheet.
+      const dataRows = raw.filter(row =>
+        Object.values(row).some(
+          value => value !== null && value !== undefined && String(value).trim() !== ''
+        )
+      )
+
+      const mapped = dataRows.map(mapRow).filter(row =>
+        row.investor_name &&
+        row.transaction_date &&
+        row.amount != null
+      )
 
       if (!mapped.length) {
         throw new Error(
@@ -922,7 +906,7 @@ function App() {
       ]
 
       setMessage(
-        `Updating ${analysed.length} transactions across ${uploadDates.length} date(s)...`
+        `Uploading ${analysed.length} transactions across ${uploadDates.length} date(s)...`
       )
 
       const { data, error: rpcError } = await supabase.rpc(
@@ -943,6 +927,40 @@ function App() {
         throw new Error(
           `Upload verification failed. Excel contained ${analysed.length} valid transactions but ${inserted} were saved.`
         )
+      }
+
+      // Verify the actual database count for every uploaded date. This
+      // catches any future issue where a source row is lost during upload.
+      const { data: dateCounts, error: verifyError } = await supabase
+        .from('transactions')
+        .select('transaction_date')
+        .in('transaction_date', uploadDates)
+
+      if (verifyError) throw verifyError
+
+      const expectedByDate = new Map()
+      analysed.forEach(row => {
+        expectedByDate.set(
+          row.transaction_date,
+          (expectedByDate.get(row.transaction_date) || 0) + 1
+        )
+      })
+
+      const actualByDate = new Map()
+      ;(dateCounts || []).forEach(row => {
+        actualByDate.set(
+          row.transaction_date,
+          (actualByDate.get(row.transaction_date) || 0) + 1
+        )
+      })
+
+      for (const [date, expected] of expectedByDate.entries()) {
+        const actual = actualByDate.get(date) || 0
+        if (actual !== expected) {
+          throw new Error(
+            `Upload verification failed for ${date}: Excel has ${expected} transactions but the database has ${actual}.`
+          )
+        }
       }
 
       await loadData()
