@@ -181,35 +181,50 @@ function explicitClassification(value) {
   sequence. We do not skip an intervening candidate transaction.
 */
 function classifyRows(rows) {
-  // IMPORTANT: never seed the current classification from
-  // classified_transaction_type/display_classification. Those fields may
-  // contain an earlier employee error. The source/original transaction type
-  // is the only starting point.
+  /*
+    FINAL SWP CLASSIFICATION RULE
+
+    Folio is deliberately ignored.
+
+    Matching key:
+      Investor + Scheme
+
+    Source SWP:
+      - If there is NO previous SWP history, keep it as SWP.
+      - Once previous SWP history exists, validate it using the same SWP
+        pattern before allowing it to remain SWP.
+
+    Source Redemption:
+      - If there is no established SWP history, keep it as Redemption.
+      - If there is established SWP history, test it against the same
+        recurring SWP pattern.
+      - If it qualifies, classify it as SWP.
+      - Otherwise keep it as Redemption.
+
+    SWP pattern:
+      - 3 consecutive eligible transactions
+      - 25–40 days between consecutive transactions
+      - amount variation <= 15%
+
+    Switch/STP:
+      - Always retain their own classification.
+      - Never participate in SWP history.
+
+    IMPORTANT:
+      classified_transaction_type and display_classification from Supabase
+      are NEVER used as source-of-truth input. The original/source type is
+      used so an old employee mistake cannot contaminate the recalculation.
+  */
+
   const output = rows.map(row => ({
     ...row,
     display_classification: null
   }))
+
   const groups = new Map()
 
-  /*
-    FINAL SWP CLASSIFICATION RULE
-
-    1. Folio number is NEVER used for SWP matching.
-    2. Matching key is Investor + Scheme only.
-    3. Employee/source SWP is always SWP. It does not need history.
-    4. Switch and STP are always kept as Switch/STP and are excluded from
-       SWP history matching.
-    5. Employee/source Redemption starts as Redemption. It can become SWP
-       only when the previous SWP history satisfies the recurring pattern.
-    6. SWP pattern: at least 3 consecutive eligible withdrawals, with every
-       consecutive gap 25–40 days and every consecutive amount variation <=15%.
-    7. A Redemption that is reclassified as SWP becomes part of SWP history
-       for subsequent Redemption rows.
-    8. Stored classified_transaction_type is NOT used to determine
-       classification. Only original_transaction_type is the source of truth.
-  */
-
   output.forEach(row => {
+    // FINAL: Folio is NOT part of the matching key.
     const key = [
       norm(row.investor_name),
       norm(row.scheme)
@@ -220,32 +235,39 @@ function classifyRows(rows) {
   })
 
   groups.forEach(items => {
-    items.sort((a, b) =>
-      String(a.transaction_date || '').localeCompare(
+    items.sort((a, b) => {
+      const dateCompare = String(a.transaction_date || '').localeCompare(
         String(b.transaction_date || '')
       )
-    )
 
-    // Establish the starting classification ONLY from the original/source
-    // transaction type. Stored classified_transaction_type is deliberately
-    // ignored because it may be stale or may contain an employee error.
+      if (dateCompare !== 0) return dateCompare
+
+      return String(a.id || '').localeCompare(String(b.id || ''))
+    })
+
+    // Start conservatively from the ORIGINAL/source transaction type.
     items.forEach(row => {
       const source = sourceLabel(row.original_transaction_type)
 
-      if (source === 'SWP') {
-        row.display_classification = 'SWP'
-      } else if (source === 'Switch') {
+      if (source === 'Switch') {
         row.display_classification = 'Switch'
       } else if (source === 'STP') {
         row.display_classification = 'STP'
+      } else if (source === 'SWP') {
+        row.display_classification = 'SWP'
       } else {
         row.display_classification = 'Redemption'
       }
     })
 
-    const eligible = items
+    /*
+      Only positive Red/SWP transactions participate in the recurring
+      withdrawal test.
+    */
+    const candidates = items
       .filter(row => {
         const source = sourceLabel(row.original_transaction_type)
+
         return (
           (source === 'Redemption' || source === 'SWP') &&
           row.transaction_date &&
@@ -261,35 +283,60 @@ function classifyRows(rows) {
       }))
       .filter(item => !Number.isNaN(item.date.getTime()))
 
-    for (let i = 0; i < eligible.length; i++) {
-      const current = eligible[i]
+    /*
+      swpHistory contains only transactions that have already been accepted
+      as SWP.
 
-      // Employee/source SWP is always SWP, as agreed.
-      if (current.source === 'SWP') {
-        current.row.display_classification = 'SWP'
-        continue
+      This makes the calculation chronological and self-correcting:
+      a transaction can become part of history only after it passes the rule.
+    */
+    const swpHistory = []
+
+    candidates.forEach(current => {
+      const source = current.source
+
+      /*
+        No previous SWP history:
+        - Source SWP stays SWP.
+        - Source Redemption stays Redemption.
+      */
+      if (swpHistory.length === 0) {
+        current.row.display_classification =
+          source === 'SWP' ? 'SWP' : 'Redemption'
+
+        if (source === 'SWP') {
+          swpHistory.push(current)
+        }
+
+        return
       }
 
-      // A Redemption can only become SWP after there is established
-      // previous SWP history. We need two prior eligible withdrawals so that
-      // the three-transaction recurring pattern can be tested.
-      if (i < 2) continue
+      /*
+        We need two previous SWP transactions to validate the current
+        transaction as the third transaction in a recurring SWP pattern.
+      */
+      if (swpHistory.length < 2) {
+        current.row.display_classification =
+          source === 'SWP' ? 'SWP' : 'Redemption'
 
-      const previous = eligible[i - 1]
-      const previousPrevious = eligible[i - 2]
+        /*
+          A source SWP is allowed to remain SWP when there is not yet enough
+          history to perform the 3-transaction test.
+        */
+        if (source === 'SWP') {
+          swpHistory.push(current)
+        }
 
-      const previousWasSwp =
-        previous.row.display_classification === 'SWP'
+        return
+      }
 
-      const previousPreviousWasSwp =
-        previousPrevious.row.display_classification === 'SWP'
-
-      // There must be SWP history immediately before this Redemption.
-      if (!previousWasSwp && !previousPreviousWasSwp) continue
+      const previous = swpHistory[swpHistory.length - 1]
+      const previousPrevious = swpHistory[swpHistory.length - 2]
 
       const days1 = Math.round(
         (previous.date - previousPrevious.date) / 86400000
       )
+
       const days2 = Math.round(
         (current.date - previous.date) / 86400000
       )
@@ -302,17 +349,28 @@ function classifyRows(rows) {
         Math.abs(current.amount - previous.amount) /
         Math.max(current.amount, previous.amount, 1)
 
-      if (
+      const qualifiesAsSwp =
         days1 >= 25 &&
         days1 <= 40 &&
         days2 >= 25 &&
         days2 <= 40 &&
         diff1 <= 0.15 &&
         diff2 <= 0.15
-      ) {
+
+      if (qualifiesAsSwp) {
         current.row.display_classification = 'SWP'
+        swpHistory.push(current)
+      } else {
+        /*
+          If a source SWP fails the historical SWP test, treat the employee
+          entry as a likely classification mistake and classify it as
+          Redemption. It is NOT added to SWP history.
+
+          A source Redemption also remains Redemption when the test fails.
+        */
+        current.row.display_classification = 'Redemption'
       }
-    }
+    })
   })
 
   return output
