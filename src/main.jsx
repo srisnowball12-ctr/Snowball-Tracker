@@ -62,7 +62,7 @@ const iso = value => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     const excelEpoch = Date.UTC(1899, 11, 30)
     const wholeDays = Math.floor(value)
-    const d = new Date(excelEpoch + wholeDays * 886400000)
+    const d = new Date(excelEpoch + wholeDays * 86400000)
 
     return [
       d.getUTCFullYear(),
@@ -280,10 +280,10 @@ function classifyRows(rows) {
       if (!hasPreviousSwpHistory) continue
 
       const days1 = Math.round(
-        (previous.date - previousPrevious.date) / 886400000
+        (previous.date - previousPrevious.date) / 86400000
       )
       const days2 = Math.round(
-        (current.date - previous.date) / 886400000
+        (current.date - previous.date) / 86400000
       )
 
       if (days1 < 25 || days1 > 40) continue
@@ -864,12 +864,15 @@ function App() {
   */
   const analysedRows = useMemo(
     () =>
-      rows.map(row => ({
-        ...row,
-        display_classification:
-          row.classified_transaction_type ||
-          'Redemption'
-      })),
+      classifyRows(
+        rows.map(row => ({
+          ...row,
+          _historyClassification:
+            row.classified_transaction_type ||
+            row.display_classification ||
+            row.original_transaction_type
+        }))
+      ),
     [rows]
   )
 
@@ -934,7 +937,7 @@ function App() {
         x.rm_name !== rm
       ) return false
 
-      const d = x.transaction_date
+      const d = iso(x.transaction_date)
 
       if (!d) return false
       if (from && d < from) return false
