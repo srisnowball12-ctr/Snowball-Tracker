@@ -181,13 +181,14 @@ function explicitClassification(value) {
   sequence. We do not skip an intervening candidate transaction.
 */
 function classifyRows(rows) {
+  // IMPORTANT: never seed the current classification from
+  // classified_transaction_type/display_classification. Those fields may
+  // contain an earlier employee error. The source/original transaction type
+  // is the only starting point.
   const output = rows.map(row => ({
-          ...row,
-          _historyClassification:
-            row.classified_transaction_type ||
-            row.display_classification ||
-            row.original_transaction_type
-        }))
+    ...row,
+    display_classification: null
+  }))
   const groups = new Map()
 
   /*
@@ -204,9 +205,8 @@ function classifyRows(rows) {
        consecutive gap 25–40 days and every consecutive amount variation <=15%.
     7. A Redemption that is reclassified as SWP becomes part of SWP history
        for subsequent Redemption rows.
-    8. Stored classified_transaction_type is used ONLY as historical context
-       for rows already in Supabase; the current/new row is never promoted to
-       SWP merely because its own stored classification says SWP.
+    8. Stored classified_transaction_type is NOT used to determine
+       classification. Only original_transaction_type is the source of truth.
   */
 
   output.forEach(row => {
@@ -226,13 +226,13 @@ function classifyRows(rows) {
       )
     )
 
-    // Establish the starting classification from the ORIGINAL source type.
+    // Establish the starting classification ONLY from the original/source
+    // transaction type. Stored classified_transaction_type is deliberately
+    // ignored because it may be stale or may contain an employee error.
     items.forEach(row => {
       const source = sourceLabel(row.original_transaction_type)
-      const storedHistory = sourceLabel(row._historyClassification)
-      const hasHistoricalClassification = Object.prototype.hasOwnProperty.call(row, '_historyClassification')
 
-      if (source === 'SWP' || (hasHistoricalClassification && storedHistory === 'SWP')) {
+      if (source === 'SWP') {
         row.display_classification = 'SWP'
       } else if (source === 'Switch') {
         row.display_classification = 'Switch'
@@ -870,26 +870,16 @@ function App() {
   }
 
   /*
-    FINAL: Always recalculate classification from the ORIGINAL employee/source
-    transaction type.  Do not trust a previously stored classified_transaction_type
-    because an earlier upload may have contained an employee classification error.
+    FINAL: Recalculate classification from ORIGINAL employee/source type.
+    Do not trust previously stored classifications.
 
-    This is essential for the agreed business rule:
+    Business rule:
       - Source SWP stays SWP.
       - Source Redemption is tested against SWP history.
-      - Folio is ignored; history is Investor + Scheme.
+      - Folio is ignored; matching is Investor + Scheme.
     */
   const analysedRows = useMemo(
-    () =>
-      classifyRows(
-        rows.map(row => ({
-          ...row,
-          _historyClassification:
-            row.classified_transaction_type ||
-            row.display_classification ||
-            row.original_transaction_type
-        }))
-      ),
+    () => classifyRows(rows),
     [rows]
   )
 
