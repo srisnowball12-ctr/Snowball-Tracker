@@ -859,20 +859,17 @@ function App() {
   }
 
   /*
-    Existing transactions are already classified in Supabase.
-    Do not re-run SWP classification on page load.
-  */
+    FINAL: Always recalculate classification from the ORIGINAL employee/source
+    transaction type.  Do not trust a previously stored classified_transaction_type
+    because an earlier upload may have contained an employee classification error.
+
+    This is essential for the agreed business rule:
+      - Source SWP stays SWP.
+      - Source Redemption is tested against SWP history.
+      - Folio is ignored; history is Investor + Scheme.
+    */
   const analysedRows = useMemo(
-    () =>
-      classifyRows(
-        rows.map(row => ({
-          ...row,
-          _historyClassification:
-            row.classified_transaction_type ||
-            row.display_classification ||
-            row.original_transaction_type
-        }))
-      ),
+    () => classifyRows(rows),
     [rows]
   )
 
@@ -1359,18 +1356,18 @@ function App() {
           .filter(Boolean)
       )
 
+      /*
+        Historical rows are included using their ORIGINAL source classification.
+        Never use a previously stored classified_transaction_type as history,
+        otherwise an old employee error can permanently contaminate future
+        classification.
+      */
       const historicalRows = rows
         .filter(row =>
           row.transaction_date &&
           !uploadDateSet.has(row.transaction_date)
         )
-        .map(row => ({
-          ...row,
-          _historyClassification:
-            row.classified_transaction_type ||
-            row.display_classification ||
-            row.original_transaction_type
-        }))
+        .map(row => ({ ...row }))
 
       const combinedForClassification = [
         ...historicalRows,
