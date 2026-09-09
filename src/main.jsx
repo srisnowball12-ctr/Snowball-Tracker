@@ -181,47 +181,33 @@ function explicitClassification(value) {
   sequence. We do not skip an intervening candidate transaction.
 */
 function classifyRows(rows) {
-  const output = rows.map(row => ({ ...row }))
+  const output = rows.map(row => ({
+          ...row,
+          _historyClassification:
+            row.classified_transaction_type ||
+            row.display_classification ||
+            row.original_transaction_type
+        }))
   const groups = new Map()
 
   /*
-    FINAL SWP CLASSIFICATION LOGIC
+    FINAL SWP CLASSIFICATION RULE
 
-    1. Folio number is completely ignored.
-    2. Group by Investor + Scheme only.
-    3. Switch and STP are always retained as Switch/STP.
-    4. An employee/source SWP remains SWP by default.
-    5. If an employee/source Redemption has established previous SWP history
-       for the same Investor + Scheme, test it against the recurring SWP
-       pattern and convert it to SWP only when the pattern is satisfied.
-    6. SWP pattern = 3 consecutive eligible transactions, each 25–40 days
-       apart, with each successive amount within 15%.
-    7. A reclassified Redemption becomes part of the SWP history for later
-       transactions.
-    8. No transaction is removed because of classification.
-
-    For rows already stored in Supabase, _historyClassification preserves the
-    classification previously established by the tracker. This allows a new
-    upload to use genuine historical SWP history without trusting Folio No.
+    1. Folio number is NEVER used for SWP matching.
+    2. Matching key is Investor + Scheme only.
+    3. Employee/source SWP is always SWP. It does not need history.
+    4. Switch and STP are always kept as Switch/STP and are excluded from
+       SWP history matching.
+    5. Employee/source Redemption starts as Redemption. It can become SWP
+       only when the previous SWP history satisfies the recurring pattern.
+    6. SWP pattern: at least 3 consecutive eligible withdrawals, with every
+       consecutive gap 25–40 days and every consecutive amount variation <=15%.
+    7. A Redemption that is reclassified as SWP becomes part of SWP history
+       for subsequent Redemption rows.
+    8. Stored classified_transaction_type is used ONLY as historical context
+       for rows already in Supabase; the current/new row is never promoted to
+       SWP merely because its own stored classification says SWP.
   */
-
-  output.forEach(row => {
-    const source = sourceLabel(row.original_transaction_type)
-    const history =
-      sourceLabel(row._historyClassification)
-
-    if (source === 'Switch') {
-      row.display_classification = 'Switch'
-    } else if (source === 'STP') {
-      row.display_classification = 'STP'
-    } else if (history === 'SWP') {
-      row.display_classification = 'SWP'
-    } else if (source === 'SWP') {
-      row.display_classification = 'SWP'
-    } else {
-      row.display_classification = 'Redemption'
-    }
-  })
 
   output.forEach(row => {
     const key = [
@@ -239,6 +225,23 @@ function classifyRows(rows) {
         String(b.transaction_date || '')
       )
     )
+
+    // Establish the starting classification from the ORIGINAL source type.
+    items.forEach(row => {
+      const source = sourceLabel(row.original_transaction_type)
+      const storedHistory = sourceLabel(row._historyClassification)
+      const hasHistoricalClassification = Object.prototype.hasOwnProperty.call(row, '_historyClassification')
+
+      if (source === 'SWP' || (hasHistoricalClassification && storedHistory === 'SWP')) {
+        row.display_classification = 'SWP'
+      } else if (source === 'Switch') {
+        row.display_classification = 'Switch'
+      } else if (source === 'STP') {
+        row.display_classification = 'STP'
+      } else {
+        row.display_classification = 'Redemption'
+      }
+    })
 
     const eligible = items
       .filter(row => {
@@ -261,23 +264,28 @@ function classifyRows(rows) {
     for (let i = 0; i < eligible.length; i++) {
       const current = eligible[i]
 
-      // Employee/source SWP always remains SWP.
+      // Employee/source SWP is always SWP, as agreed.
       if (current.source === 'SWP') {
         current.row.display_classification = 'SWP'
         continue
       }
 
-      // Employee/source Redemption needs previous SWP history.
+      // A Redemption can only become SWP after there is established
+      // previous SWP history. We need two prior eligible withdrawals so that
+      // the three-transaction recurring pattern can be tested.
+      if (i < 2) continue
+
       const previous = eligible[i - 1]
       const previousPrevious = eligible[i - 2]
 
-      if (!previous || !previousPrevious) continue
+      const previousWasSwp =
+        previous.row.display_classification === 'SWP'
 
-      const hasPreviousSwpHistory =
-        previous.row.display_classification === 'SWP' ||
+      const previousPreviousWasSwp =
         previousPrevious.row.display_classification === 'SWP'
 
-      if (!hasPreviousSwpHistory) continue
+      // There must be SWP history immediately before this Redemption.
+      if (!previousWasSwp && !previousPreviousWasSwp) continue
 
       const days1 = Math.round(
         (previous.date - previousPrevious.date) / 86400000
@@ -285,9 +293,6 @@ function classifyRows(rows) {
       const days2 = Math.round(
         (current.date - previous.date) / 86400000
       )
-
-      if (days1 < 25 || days1 > 40) continue
-      if (days2 < 25 || days2 > 40) continue
 
       const diff1 =
         Math.abs(previous.amount - previousPrevious.amount) /
@@ -297,15 +302,21 @@ function classifyRows(rows) {
         Math.abs(current.amount - previous.amount) /
         Math.max(current.amount, previous.amount, 1)
 
-      if (diff1 > 0.15 || diff2 > 0.15) continue
-
-      current.row.display_classification = 'SWP'
+      if (
+        days1 >= 25 &&
+        days1 <= 40 &&
+        days2 >= 25 &&
+        days2 <= 40 &&
+        diff1 <= 0.15 &&
+        diff2 <= 0.15
+      ) {
+        current.row.display_classification = 'SWP'
+      }
     }
   })
 
   return output
 }
-
 function mapRow(row) {
   const lookup = Object.fromEntries(
     Object.entries(row).map(([k, v]) => [norm(k), v])
@@ -869,7 +880,16 @@ function App() {
       - Folio is ignored; history is Investor + Scheme.
     */
   const analysedRows = useMemo(
-    () => classifyRows(rows),
+    () =>
+      classifyRows(
+        rows.map(row => ({
+          ...row,
+          _historyClassification:
+            row.classified_transaction_type ||
+            row.display_classification ||
+            row.original_transaction_type
+        }))
+      ),
     [rows]
   )
 
