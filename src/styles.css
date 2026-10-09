@@ -930,3 +930,249 @@ td { color: #425466; }
   .trendChart { gap: 8px; }
   .trendBar { width: 8px; }
 }
+
+
+/* --- Snowball Tracker UI refinement: larger typography and clearer spacing --- */
+:root {
+  --bg: #f3f6f9;
+  --panel: #ffffff;
+  --line: #d5dfe8;
+}
+
+html, body, #root {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.sidebarNav button,
+.sidebarBottom button {
+  font-size: 14px;
+  line-height: 1.35;
+  padding: 14px 15px;
+}
+
+.mainContent {
+  padding: 0 22px 32px;
+}
+
+.topHeader {
+  min-height: 84px;
+}
+
+.topHeader h1 {
+  font-size: clamp(26px, 2vw, 32px);
+  line-height: 1.25;
+}
+
+.topHeader p {
+  font-size: 15px;
+}
+
+.iconButton,
+.logoutTop,
+.uploadButton,
+.secondaryButton,
+.primaryButton,
+.viewAllButton,
+.activateButton,
+.deactivateButton,
+.settingsTabs button {
+  font-size: 14px;
+}
+
+.filterBar {
+  padding: 15px 16px;
+  gap: 12px;
+  border-radius: 16px;
+}
+
+.periodButtons button {
+  font-size: 13px;
+  padding: 11px 15px;
+}
+
+.filterBar select,
+.filterBar input,
+.rmAddCard input,
+.emailField,
+.loginCard input {
+  font-size: 14px;
+  min-height: 46px;
+}
+
+.kpiGrid {
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.kpiCard {
+  min-height: 116px;
+  padding: 19px 18px;
+  border-radius: 16px;
+}
+
+.kpiCard span {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.kpiCard strong {
+  font-size: clamp(19px, 1.65vw, 25px);
+  line-height: 1.25;
+  letter-spacing: -0.35px;
+}
+
+.chartCard,
+.recentCard,
+.dataCard,
+.rmAddCard,
+.rmListCard {
+  border-radius: 16px;
+  box-shadow: 0 5px 18px rgba(39, 59, 80, .06);
+}
+
+.chartCard {
+  padding: 22px;
+}
+
+.chartCard h3,
+.sectionHeading h2,
+.rmAddCard h2,
+.rmListCard h2 {
+  font-size: 19px;
+  line-height: 1.35;
+}
+
+.sectionHeading p,
+.rmAddCard p,
+.rmListCard p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.legendRow,
+.rmBarRow {
+  font-size: 14px;
+}
+
+.legendRow strong,
+.rmBarRow strong {
+  font-size: 13px;
+}
+
+.donutHole strong {
+  font-size: 22px;
+}
+
+.donutHole span,
+.trendMonth {
+  font-size: 13px;
+}
+
+.recentCard,
+.dataCard {
+  padding: 22px;
+}
+
+table {
+  font-size: 14px;
+}
+
+th {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+th, td {
+  padding: 14px 13px;
+  line-height: 1.45;
+}
+
+.pagination button {
+  font-size: 13px;
+  padding: 9px 12px;
+}
+
+.rmName strong {
+  font-size: 15px;
+}
+
+.statusActive,
+.statusInactive,
+.statusAdmin {
+  font-size: 12px;
+}
+
+.loginCard {
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .16);
+}
+
+.loginCard h1,
+.loginCard h2 {
+  font-size: 29px;
+  line-height: 1.25;
+}
+
+.loginCard label {
+  font-size: 14px;
+}
+
+.loginSub {
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.error,
+.message,
+.successBox {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.notificationItem span,
+.notificationItem small,
+.notificationEmpty {
+  font-size: 13px;
+}
+
+@media (max-width: 1250px) {
+  .kpiCard strong {
+    font-size: clamp(18px, 2vw, 23px);
+  }
+}
+
+@media (max-width: 950px) {
+  .mainContent {
+    padding: 0 16px 28px;
+  }
+}
+
+@media (max-width: 720px) {
+  .mainContent {
+    padding: 0 10px 20px;
+  }
+
+  .topHeader h1 {
+    font-size: 23px;
+  }
+
+  .kpiCard span {
+    font-size: 13px;
+  }
+
+  .kpiCard strong {
+    font-size: clamp(17px, 4.5vw, 22px);
+  }
+
+  table {
+    font-size: 13px;
+  }
+
+  th {
+    font-size: 12px;
+  }
+
+  th, td {
+    padding: 12px 10px;
+  }
+}
