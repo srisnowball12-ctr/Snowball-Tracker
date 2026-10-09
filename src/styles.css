@@ -1237,3 +1237,25 @@ html, body, #root {
 @media (max-width: 600px) {
   .kpiCard strong { font-size: 14px !important; }
 }
+
+
+/* FINAL KPI FIX: keep amounts bold, readable, and inside each card. */
+.kpiCard strong {
+  font-weight: 800 !important;
+  font-size: clamp(13px, 1.15vw, 17px) !important;
+  line-height: 1.3 !important;
+  letter-spacing: -0.25px !important;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+@media (min-width: 1251px) {
+  .kpiCard strong { font-size: clamp(14px, 1.1vw, 17px) !important; }
+}
+@media (max-width: 950px) {
+  .kpiCard strong { font-size: clamp(12px, 1.5vw, 15px) !important; }
+}
+@media (max-width: 600px) {
+  .kpiCard strong { font-size: 13px !important; }
+}
