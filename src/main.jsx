@@ -262,6 +262,113 @@ function classifyRows(rows) {
   return output.map(({ _stableOrder, ...row }) => row)
 }
 
+
+function mapRow(row) {
+  const lookup = Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [norm(k), v])
+  )
+
+  const get = (...keys) =>
+    keys
+      .map(k => lookup[norm(k)])
+      .find(v =>
+        v !== undefined &&
+        v !== null &&
+        v !== ''
+      )
+
+  const amountRaw = get(
+    'Amount(₹)',
+    'Amount',
+    'amount',
+    'Transaction Amount'
+  )
+
+  const amount =
+    typeof amountRaw === 'number'
+      ? amountRaw
+      : Number(
+          String(amountRaw || '')
+            .replace(/[₹,\s]/g, '')
+        )
+
+  const originalType =
+    get(
+      'Type',
+      'Transaction Type',
+      'Transaction Type Description',
+      'Txn Type',
+      'Txn Type Description',
+      'Nature of Transaction',
+      'Transaction Nature',
+      'Transaction Description',
+      'Description',
+      'Remarks',
+      'Source',
+      'original_transaction_type'
+    ) || null
+
+  return {
+    rm_name: get(
+      'Partner/Employee',
+      'Partner',
+      'Employee',
+      'RM',
+      'rm_name'
+    ) || null,
+
+    group_name:
+      get('Group', 'group_name') || null,
+
+    investor_name: get(
+      'Investor',
+      'Investor Name',
+      'Client Name',
+      'investor_name'
+    ) || null,
+
+    transaction_date: iso(
+      get(
+        'Date',
+        'Redemption Date',
+        'Transaction Date',
+        'transaction_date'
+      )
+    ),
+
+    folio_no: String(
+      get(
+        'Folio No/Demat A/C',
+        'Folio No',
+        'Folio',
+        'folio_no'
+      ) || ''
+    ) || null,
+
+    scheme:
+      get('Scheme', 'Fund', 'scheme') || null,
+
+    amount:
+      Number.isFinite(amount)
+        ? amount
+        : null,
+
+    original_transaction_type:
+      sourceLabel(originalType),
+
+    classified_transaction_type:
+      sourceLabel(originalType) === 'Switch'
+        ? 'Switch'
+        : sourceLabel(originalType) === 'STP'
+          ? 'STP'
+          : 'Redemption',
+
+    classification_status: 'Completed',
+    classification_reason: null
+  }
+}
+
+
 function App() {
   const [session, setSession] = useState(null)
   const [email, setEmail] = useState('')
@@ -393,6 +500,7 @@ function App() {
       await loadRms()
       await loadNotifications()
       setMessage('Refresh completed.')
+      window.setTimeout(() => setMessage(''), 3000)
     } catch (err) {
       console.error(err)
       setError(err?.message || 'Refresh failed. Please try again.')
