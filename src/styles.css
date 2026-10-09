@@ -1176,3 +1176,64 @@ th, td {
     padding: 12px 10px;
   }
 }
+
+/* Final readability fixes: prevent KPI values from overflowing and lighten the page */
+:root {
+  --ink: #26384b;
+  --muted: #68798b;
+  --line: #dbe3eb;
+  --panel: #ffffff;
+  --bg: #f6f8fb;
+}
+
+html, body, #root {
+  background: #f6f8fb !important;
+  color: #26384b;
+}
+
+.appShell,
+.mainContent,
+.dashboard,
+.pageContent {
+  background: #f6f8fb !important;
+}
+
+.kpiCard {
+  min-width: 0;
+  overflow: hidden;
+  background: #ffffff;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.kpiCard span {
+  display: block;
+  font-size: 13px;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+
+.kpiCard strong {
+  display: block;
+  max-width: 100%;
+  font-size: clamp(14px, 1.35vw, 18px) !important;
+  line-height: 1.25;
+  letter-spacing: -0.35px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+@media (min-width: 1251px) {
+  .kpiCard strong { font-size: clamp(15px, 1.25vw, 18px) !important; }
+}
+
+@media (max-width: 950px) {
+  .kpiCard { padding-left: 12px; padding-right: 10px; }
+  .kpiCard strong { font-size: clamp(13px, 1.8vw, 17px) !important; }
+}
+
+@media (max-width: 600px) {
+  .kpiCard strong { font-size: 14px !important; }
+}
