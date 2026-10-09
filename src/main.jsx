@@ -1,3 +1,9 @@
+/*
+ * Snowball Redemption Tracker production deployment note:
+ * Keep the existing Vercel project and production URL unchanged:
+ * https://snowball-tracker-kappa.vercel.app/
+ * Do not create a new Vercel project or change the project's domain settings.
+ */
 import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createClient } from '@supabase/supabase-js'
