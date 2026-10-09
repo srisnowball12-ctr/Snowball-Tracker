@@ -181,314 +181,85 @@ function explicitClassification(value) {
   sequence. We do not skip an intervening candidate transaction.
 */
 function classifyRows(rows) {
-  const output = rows.map(row => ({
-    ...row
+  const output = rows.map((row, index) => ({
+    ...row,
+    _stableOrder: Number(row._uploadRowIndex ?? row.id ?? index)
   }))
-
   const groups = new Map()
 
-  /*
-    FINAL SWP CLASSIFICATION LOGIC
-    ------------------------------
-
-    1. Folio number is NEVER used for SWP matching.
-    2. Matching key is Investor + Scheme only.
-    3. SWITCH and STP are always kept as their own classifications and
-       NEVER participate in SWP history.
-    4. EMPLOYEE-MARKED SWP:
-       - If the employee/source Type is SWP, it is ALWAYS classified as SWP.
-       - No 25–40 day test is required for that row.
-       - No <=15% amount-variation test is required for that row.
-       - It is immediately added to accepted SWP history.
-       - Therefore, an employee-marked SWP can be the first SWP in a series.
-       - It can then be used as one of the prior SWP-history transactions
-         when testing a later Redemption.
-       - We do NOT override an employee-marked SWP back to Redemption.
-    5. EMPLOYEE-MARKED REDEMPTION:
-       - Starts as Redemption.
-       - It can become SWP only when it completes a valid 3-transaction
-         recurring SWP pattern with the two immediately preceding accepted
-         SWP-history transactions.
-       - Both previous transactions must be accepted SWP history.
-       - Previous-to-previous gap: 25–40 days.
-       - Previous-to-current gap: 25–40 days.
-       - Amount variation for both consecutive intervals: <=15%.
-       - If all conditions pass, the Redemption becomes SWP and is then
-         added to SWP history.
-       - If any condition fails, it remains Redemption and is NOT added
-         to SWP history.
-    6. Classification is always recalculated from ORIGINAL transaction type.
-       Previously stored classified_transaction_type is NOT used as the
-       source of truth.
-  */
-
   output.forEach(row => {
-    const key = [
-      norm(row.investor_name),
-      norm(row.scheme)
-    ].join('|')
-
+    const key = [norm(row.investor_name), norm(row.scheme)].join('|')
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(row)
   })
 
   groups.forEach(items => {
     items.sort((a, b) => {
-      const dateCompare =
-        String(a.transaction_date || '').localeCompare(
-          String(b.transaction_date || '')
-        )
-
-      if (dateCompare !== 0) return dateCompare
-
-      // Keep source-row order stable when two transactions have the same date.
-      return Number(a._uploadRowIndex ?? 0) -
-        Number(b._uploadRowIndex ?? 0)
+      const dateCompare = String(a.transaction_date || '').localeCompare(String(b.transaction_date || ''))
+      return dateCompare || (Number(a._stableOrder) - Number(b._stableOrder))
     })
 
-    /*
-      IMPORTANT:
-      Start EVERY row from its ORIGINAL source Type.
-      Never inherit an old stored classification.
-    */
+    // Always begin from the original/source type; stored classifications are ignored.
     items.forEach(row => {
       const source = sourceLabel(row.original_transaction_type)
+      row.display_classification =
+        source === 'SWP' ? 'SWP' :
+        source === 'Switch' ? 'Switch' :
+        source === 'STP' ? 'STP' : 'Redemption'
+    })
+
+    // Only source SWPs and qualifying redemptions enter accepted SWP history.
+    const acceptedSwpHistory = []
+    const eligible = items.filter(row => {
+      const source = sourceLabel(row.original_transaction_type)
+      return (source === 'Redemption' || source === 'SWP') &&
+        row.transaction_date &&
+        Number.isFinite(Number(row.amount)) &&
+        Number(row.amount) > 0
+    })
+
+    for (const row of eligible) {
+      const source = sourceLabel(row.original_transaction_type)
+      const currentDate = new Date(`${row.transaction_date}T00:00:00Z`)
+      const currentAmount = Number(row.amount)
 
       if (source === 'SWP') {
         row.display_classification = 'SWP'
-      } else if (source === 'Switch') {
-        row.display_classification = 'Switch'
-      } else if (source === 'STP') {
-        row.display_classification = 'STP'
+        acceptedSwpHistory.push({ row, date: currentDate, amount: currentAmount })
+        continue
+      }
+
+      if (acceptedSwpHistory.length < 2) {
+        row.display_classification = 'Redemption'
+        continue
+      }
+
+      const previous = acceptedSwpHistory[acceptedSwpHistory.length - 1]
+      const previousPrevious = acceptedSwpHistory[acceptedSwpHistory.length - 2]
+      const days1 = Math.round((previous.date - previousPrevious.date) / 86400000)
+      const days2 = Math.round((currentDate - previous.date) / 86400000)
+      const diff1 = Math.abs(previous.amount - previousPrevious.amount) /
+        Math.max(previous.amount, previousPrevious.amount, 1)
+      const diff2 = Math.abs(currentAmount - previous.amount) /
+        Math.max(currentAmount, previous.amount, 1)
+
+      const qualifies =
+        days1 >= 25 && days1 <= 40 &&
+        days2 >= 25 && days2 <= 40 &&
+        diff1 <= 0.15 && diff2 <= 0.15
+
+      if (qualifies) {
+        row.display_classification = 'SWP'
+        acceptedSwpHistory.push({ row, date: currentDate, amount: currentAmount })
       } else {
         row.display_classification = 'Redemption'
       }
-    })
-
-    /*
-      Eligible history consists only of Redemption and source-SWP rows.
-      Switch/STP are deliberately excluded.
-    */
-    const eligible = items
-      .filter(row => {
-        const source =
-          sourceLabel(row.original_transaction_type)
-
-        return (
-          (source === 'Redemption' || source === 'SWP') &&
-          row.transaction_date &&
-          Number.isFinite(Number(row.amount)) &&
-          Number(row.amount) > 0
-        )
-      })
-      .map(row => ({
-        row,
-        source:
-          sourceLabel(row.original_transaction_type),
-        date:
-          new Date(`${row.transaction_date}T00:00:00Z`),
-        amount:
-          Number(row.amount)
-      }))
-      .filter(item =>
-        !Number.isNaN(item.date.getTime())
-      )
-
-    /*
-      acceptedSwpHistory contains ONLY transactions that are genuinely
-      accepted as SWP:
-        - employee/source SWP
-        - Redemption reclassified to SWP
-      A failed Redemption is never added.
-    */
-    const acceptedSwpHistory = []
-
-    for (const current of eligible) {
-      /*
-        EMPLOYEE-MARKED SWP:
-        Always accept it as SWP, regardless of date gap or amount.
-      */
-      if (current.source === 'SWP') {
-        current.row.display_classification = 'SWP'
-        acceptedSwpHistory.push(current)
-        continue
-      }
-
-      /*
-        EMPLOYEE-MARKED REDEMPTION:
-        We need TWO immediately preceding accepted SWP-history
-        transactions to test the 3-transaction pattern.
-      */
-      if (acceptedSwpHistory.length < 2) {
-        current.row.display_classification = 'Redemption'
-        continue
-      }
-
-      const previous =
-        acceptedSwpHistory[
-          acceptedSwpHistory.length - 1
-        ]
-
-      const previousPrevious =
-        acceptedSwpHistory[
-          acceptedSwpHistory.length - 2
-        ]
-
-      const days1 = Math.round(
-        (previous.date - previousPrevious.date) /
-          86400000
-      )
-
-      const days2 = Math.round(
-        (current.date - previous.date) /
-          86400000
-      )
-
-      const diff1 =
-        Math.abs(
-          previous.amount -
-          previousPrevious.amount
-        ) /
-        Math.max(
-          previous.amount,
-          previousPrevious.amount,
-          1
-        )
-
-      const diff2 =
-        Math.abs(
-          current.amount -
-          previous.amount
-        ) /
-        Math.max(
-          current.amount,
-          previous.amount,
-          1
-        )
-
-      const qualifies =
-        days1 >= 25 &&
-        days1 <= 40 &&
-        days2 >= 25 &&
-        days2 <= 40 &&
-        diff1 <= 0.15 &&
-        diff2 <= 0.15
-
-      if (qualifies) {
-        current.row.display_classification = 'SWP'
-        acceptedSwpHistory.push(current)
-      } else {
-        current.row.display_classification = 'Redemption'
-      }
     }
+
+    // Rows excluded from SWP eligibility (Switch/STP) retain their own labels.
   })
 
-  return output
-}
-
-function mapRow(row) {
-  const lookup = Object.fromEntries(
-    Object.entries(row).map(([k, v]) => [norm(k), v])
-  )
-
-  const get = (...keys) =>
-    keys
-      .map(k => lookup[norm(k)])
-      .find(v =>
-        v !== undefined &&
-        v !== null &&
-        v !== ''
-      )
-
-  const amountRaw = get(
-    'Amount(₹)',
-    'Amount',
-    'amount',
-    'Transaction Amount'
-  )
-
-  const amount =
-    typeof amountRaw === 'number'
-      ? amountRaw
-      : Number(
-          String(amountRaw || '')
-            .replace(/[₹,\s]/g, '')
-        )
-
-  const originalType =
-    get(
-      'Type',
-      'Transaction Type',
-      'Transaction Type Description',
-      'Txn Type',
-      'Txn Type Description',
-      'Nature of Transaction',
-      'Transaction Nature',
-      'Transaction Description',
-      'Description',
-      'Remarks',
-      'Source',
-      'original_transaction_type'
-    ) || null
-
-  return {
-    rm_name: get(
-      'Partner/Employee',
-      'Partner',
-      'Employee',
-      'RM',
-      'rm_name'
-    ) || null,
-
-    group_name:
-      get('Group', 'group_name') || null,
-
-    investor_name: get(
-      'Investor',
-      'Investor Name',
-      'Client Name',
-      'investor_name'
-    ) || null,
-
-    transaction_date: iso(
-      get(
-        'Date',
-        'Redemption Date',
-        'Transaction Date',
-        'transaction_date'
-      )
-    ),
-
-    folio_no: String(
-      get(
-        'Folio No/Demat A/C',
-        'Folio No',
-        'Folio',
-        'folio_no'
-      ) || ''
-    ) || null,
-
-    scheme:
-      get('Scheme', 'Fund', 'scheme') || null,
-
-    amount:
-      Number.isFinite(amount)
-        ? amount
-        : null,
-
-    original_transaction_type:
-      sourceLabel(originalType),
-
-    classified_transaction_type:
-      sourceLabel(originalType) === 'Switch'
-        ? 'Switch'
-        : sourceLabel(originalType) === 'STP'
-          ? 'STP'
-          : 'Redemption',
-
-    classification_status: 'Completed',
-    classification_reason: null
-  }
+  return output.map(({ _stableOrder, ...row }) => row)
 }
 
 function App() {
@@ -608,6 +379,27 @@ function App() {
     setRows([])
     setRms([])
     window.location.replace(window.location.origin)
+  }
+
+  const [refreshing, setRefreshing] = useState(false)
+
+  async function refreshAll() {
+    if (refreshing) return
+    setRefreshing(true)
+    setError('')
+    setMessage('Refreshing transactions, RM list and notifications...')
+    try {
+      await loadData()
+      await loadRms()
+      await loadNotifications()
+      setMessage('Refresh completed.')
+    } catch (err) {
+      console.error(err)
+      setError(err?.message || 'Refresh failed. Please try again.')
+      setMessage('')
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   async function loadData() {
@@ -950,15 +742,7 @@ function App() {
     */
   const analysedRows = useMemo(
     () =>
-      classifyRows(
-        rows.map(row => ({
-          ...row,
-          _historyClassification:
-            row.classified_transaction_type ||
-            row.display_classification ||
-            row.original_transaction_type
-        }))
-      ),
+      classifyRows(rows),
     [rows]
   )
 
@@ -1514,28 +1298,12 @@ function App() {
           .trim()
           .toLowerCase()
 
-      /*
-        CONSOLIDATED FILE DETECTION
-        ----------------------------
-        There is NO transaction-count limit.
-
-        A file is treated as a consolidated snapshot when:
-          1. Its filename contains "conso" or "consolidated", OR
-          2. It contains the Snowball master start date (1-Apr-2026).
-
-        Therefore a consolidated file may contain 50, 500, 5,000 or
-        50,000 transactions without changing the behaviour.
-
-        A normal daily/partial update remains date-scoped, even if it
-        contains more than 500 rows.
-      */
-      const hasMasterStartDate =
-        uploadDates.includes('2026-04-01')
-
       const isConsolidatedFile =
         normalizedName.includes('conso') ||
-        normalizedName.includes('consolidated') ||
-        hasMasterStartDate
+        normalizedName.includes(
+          'consolidated'
+        ) ||
+        analysed.length >= 500
 
       // Consolidated uploads replace all dates already present in the loaded
       // dataset, plus all dates in the new Excel. Daily/partial uploads remain
@@ -2225,15 +1993,13 @@ function App() {
 
             <button
               className="iconButton"
-              onClick={async () => {
-                await loadData()
-                await loadRms()
-                await loadNotifications()
-              }}
-              title="Refresh"
+              onClick={refreshAll}
+              title={refreshing ? 'Refreshing…' : 'Refresh'}
+              disabled={refreshing}
             >
               <RefreshCw
                 size={18}
+                className={refreshing ? 'spin' : undefined}
               />
             </button>
 
